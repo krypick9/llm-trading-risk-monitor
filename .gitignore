@@ -1,0 +1,72 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# ── Virtual environments ──
+venv/
+.venv/
+env/
+ENV/
+.python-version
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ── Environment & secrets ──
+.env
+.env.*
+!.env.example
+secrets.json
+api_keys.json
+*.pem
+*.key
+
+# ── Data (large files — use Google Drive / shared storage) ──
+data/raw/
+data/processed/
+*.parquet
+*.feather
+*.h5
+*.hdf5
+!data/.gitkeep
+!data/README.md
+!data/scripts/.gitkeep
+
+# ── Experiment results (large outputs) ──
+results/large/
+results/raw/
+*.pkl
+*.joblib
+!results/.gitkeep
+!results/README.md
+
+# ── perp_sim output ──
+perp_sim/output/*.csv
+!perp_sim/output/.gitkeep
+
+# ── Jupyter ──
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# ── OS junk ──
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ── Logs ──
+*.log
+logs/
+!logs/.gitkeep
