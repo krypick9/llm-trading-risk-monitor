@@ -36,7 +36,7 @@ api_keys.json
 
 # ── Data (large files — use Google Drive / shared storage) ──
 data/raw/
-data/processed/
+raw/
 *.parquet
 *.feather
 *.h5
@@ -44,6 +44,10 @@ data/processed/
 !data/.gitkeep
 !data/README.md
 !data/scripts/.gitkeep
+!data/scripts/                  # calibration scripts should be tracked
+!data/processed/.gitkeep
+!data/processed/*.json          # calibration results are small JSON files
+!data/reference/                # teammate's processed reference data
 
 # ── Experiment results (large outputs) ──
 results/large/

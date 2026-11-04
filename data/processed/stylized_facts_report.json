@@ -1,0 +1,56 @@
+[
+  {
+    "scenario": "normal-thick-early",
+    "n_steps": 600,
+    "n_returns": 75,
+    "sigma_hourly": 0.010186334151337524,
+    "max_drawdown": 0.042563818257190945,
+    "stylized_facts": {
+      "fat_tails": {
+        "excess_kurtosis": 10.297340034593056,
+        "pass": true,
+        "reference": "BTC normal: 5-10, stress: 10-30"
+      },
+      "volatility_clustering": {
+        "acf_lag1": 0.609315674055747,
+        "acf_lag5": 0.06946227812127172,
+        "acf_lag10": -0.06777025332015454,
+        "pass": true,
+        "reference": "real markets: lag1 = 0.1-0.5"
+      },
+      "order_flow_autocorrelation": {
+        "acf_lag1": 0.27964660180812306,
+        "pass": true,
+        "reference": "real markets: 0.2-0.6"
+      }
+    },
+    "overall_pass": true
+  },
+  {
+    "scenario": "stress-thin-early",
+    "n_steps": 600,
+    "n_returns": 252,
+    "sigma_hourly": 0.052720348404539076,
+    "max_drawdown": 0.2121595078201153,
+    "stylized_facts": {
+      "fat_tails": {
+        "excess_kurtosis": 5.730193713442397,
+        "pass": true,
+        "reference": "BTC normal: 5-10, stress: 10-30"
+      },
+      "volatility_clustering": {
+        "acf_lag1": 0.6047790767405905,
+        "acf_lag5": 0.05511155252352306,
+        "acf_lag10": -0.047055381094142514,
+        "pass": true,
+        "reference": "real markets: lag1 = 0.1-0.5"
+      },
+      "order_flow_autocorrelation": {
+        "acf_lag1": 0.46535335873798994,
+        "pass": true,
+        "reference": "real markets: 0.2-0.6"
+      }
+    },
+    "overall_pass": true
+  }
+]

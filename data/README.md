@@ -4,9 +4,11 @@
 
 ```
 data/
-├── raw/           # Downloaded data (gitignored — store in shared Google Drive)
-├── processed/     # Cleaned, feature-ready data (gitignored for large files)
-├── scripts/       # Data acquisition scripts (in git)
+├── raw/           # Downloaded raw data (gitignored — store in shared Google Drive)
+├── processed/     # Calibration results (small JSON files, tracked in git)
+├── reference/     # Teammate's processed 1-min reference data (tracked in git)
+├── scripts/       # Data acquisition & calibration scripts (tracked in git)
+├── CALIBRATION.md # Calibration data sources and pipeline documentation
 └── README.md      # This file
 ```
 
@@ -38,9 +40,41 @@ data/
 
 ## Shared Storage
 
-Large data files are stored in the team's shared Google Drive (not in git).
-- **Drive link:** _[add link here]_
-- **Folder structure mirrors `data/raw/`**
+Large raw data files (~706 MB) are stored locally in `data/raw/` (gitignored). To share with the team:
+
+1. Upload `data/raw/` to the team's shared Google Drive or other cloud storage
+2. Update the link here:
+   - **Drive link:** _[add link when available]_
+   - **Folder structure mirrors `data/raw/`**
+
+### Raw data contents
+
+| Path | Source | Days | Size | Used for |
+|------|--------|------|------|----------|
+| `data/raw/binance/aggTrades/` | Binance Vision | Sep 15-17, Oct 9-10, Aug 25 (6 days) | ~697 MB | sigma, jumps, kurtosis |
+| `data/raw/binance/bookDepth/` | Binance Vision | Same 6 days | ~9 MB | spread, depth |
+| `data/raw/hyperliquid/` | Hyperliquid API | Sep-Nov 2025 | ~64 KB | funding rate, live orderbook |
+
+### Re-downloading raw data
+
+```bash
+python data/scripts/download_data.py
+```
+
+This re-downloads all raw data from Binance Vision (free, no API key) and Hyperliquid API (free).
+
+## Reference data (teammate)
+
+`data/reference/` contains processed 1-minute data from a teammate's Phase 3 reference tool:
+
+| File | Source | Days | Description |
+|------|--------|------|-------------|
+| `binance_aggTrades_BTCUSDT_1min.csv` | Binance aggTrades | Sep 24 - Oct 20 (22 days) | 1-min OHLC + volume + signed flow |
+| `bybit_orderbook_BTCUSDT_1min.csv` | Bybit orderbook | Same 22 days | 1-min mid, spread, depth, imbalance |
+| `crash_window.png` | - | - | Visualization of crash window |
+| `DATA_README.md` | - | - | Original data documentation |
+
+These are **complementary** to our calibration data: different dates, different exchange (Bybit), coarser granularity.
 
 ## Sources
 
