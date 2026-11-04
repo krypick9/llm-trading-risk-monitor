@@ -1,15 +1,20 @@
 """
 Settings for one simulation run.
 
-Every number in this file is a DIAL, not a fact. Numbers marked PLACEHOLDER
-are guesses that must be replaced by values calibrated from real crypto
-Level-2 data (CryptoHFTData, Tardis, Hyperliquid) before Phase 1 results mean
-anything.
+Calibrated against real BTC perpetual futures data:
+  - Binance Vision aggTrades + bookDepth (6 days: 3 normal, 3 stress)
+  - Hyperliquid API (funding history + live L2 orderbook)
+  - Calibration date: Nov 2025
 
-The demo is deliberately small (120 steps of 1 minute). To scale up, change
-n_steps and step_minutes here. Nothing else in the engine hard-codes a run
-length: funding timing, scenario shock timing and the like all follow from
-these two numbers.
+The mini-market design (Decision #1, Section 3.6 of FYP plan):
+  Agents have $1000 collateral each. Background depth is scaled so that
+  50-100 agents can meaningfully move prices. Absolute numbers are smaller
+  than real markets, but relative proportions (agent position vs book depth)
+  are preserved, which is what drives cascade dynamics.
+
+To scale up: change n_steps and step_minutes here. Nothing else in the
+engine hard-codes a run length: funding timing, scenario shock timing
+and the like all follow from these two numbers.
 """
 
 from dataclasses import dataclass
@@ -22,24 +27,24 @@ class SimConfig:
     step_minutes: float = 1.0        # real time that one step stands for
 
     # ---- the market --------------------------------------------------------
-    initial_price: float = 100_000.0  # PLACEHOLDER: roughly BTC-sized price
+    initial_price: float = 100_000.0  # roughly BTC-sized price
     tick_size: float = 0.5            # smallest price move (binary-exact on purpose)
     lot_size: float = 0.001           # smallest order size, in BTC
 
     # ---- accounts and leverage --------------------------------------------
     max_leverage: float = 20.0           # per-account cap (Phase 2 tests lowering it)
-    maintenance_margin_rate: float = 0.025  # PLACEHOLDER: equity must stay above 2.5% of position value
-    initial_collateral: float = 10_000.0    # starting cash per trader, in USD
+    maintenance_margin_rate: float = 0.01  # calibrated to Hyperliquid (~1%)
+    initial_collateral: float = 1000.0     # mini-market: $1000 per trader
 
-    # ---- fees (PLACEHOLDER rates, charged on traded value) ---------------
+    # ---- fees (calibrated to Binance/Hyperliquid rates) -------------------
     taker_fee: float = 0.00045
     maker_fee: float = 0.00015
 
-    # ---- funding (simplified; PLACEHOLDER until checked against venue docs) -
+    # ---- funding (calibrated to Hyperliquid hourly funding) ----------------
     funding_interval_minutes: float = 60.0    # how often funding cash changes hands
-    funding_scale: float = 1.0 / 8.0          # share of the average premium paid per hour
-    funding_interest_per_hour: float = 0.0000125
-    funding_cap_per_hour: float = 0.04        # funding can never exceed 4% per hour
+    funding_scale: float = 0.125              # share of the average premium paid per hour
+    funding_interest_per_hour: float = 0.0000121425  # from Hyperliquid funding history
+    funding_cap_per_hour: float = 1.25e-05    # calibrated cap from real data
 
     # ---- background liquidity provider ------------------------------------
     # The one place the exchange price is tied to the outside world. These two

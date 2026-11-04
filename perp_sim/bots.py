@@ -16,7 +16,9 @@ import random
 
 from engine import BUY, SELL, CancelAll, OrderRequest
 
-MIN_TRADE = 0.01      # ignore adjustments smaller than this many BTC
+MIN_TRADE = 0.002      # ignore adjustments smaller than this many BTC
+                          # mini-market: must be > lot_size (0.001) but small
+                          # enough that bots with $1000 collateral can trade
 
 
 class Bot:
@@ -59,7 +61,7 @@ class CrowdBot(Bot):
     LLM agents produce such crowding on their own."""
     kind = "crowd"
 
-    def __init__(self, account_id, seed, leverage, ramp_steps=20, act_prob=0.7):
+    def __init__(self, account_id, seed, leverage, ramp_steps=5, act_prob=0.7):
         super().__init__(account_id, seed, act_prob)
         self.leverage = leverage
         self.ramp_steps = ramp_steps
