@@ -68,6 +68,17 @@ class SimConfig:
     liquidations_enabled: bool = True   # False = a counterfactual control: no forced closing
     max_liquidation_rounds: int = 25    # safety limit on chain reactions inside one step
 
+    # ---- circuit breaker (Phase 2 intervention) -----------------------------
+    # When enabled, the exchange rejects all new MARKET orders if the last
+    # price deviates more than circuit_breaker_pct from the index price.
+    # This models a "limit up / limit down" regime: forced selling cannot
+    # push the price beyond the band, breaking the cascade feedback loop.
+    # Phase 1: disabled (circuit_breaker_enabled=False) to observe unmitigated cascades.
+    # Phase 2: enabled to test intervention effectiveness.
+    circuit_breaker_enabled: bool = False
+    circuit_breaker_pct: float = 0.05   # 5% deviation triggers the breaker
+    circuit_breaker_cooldown_steps: int = 10  # how long the breaker stays active
+
     seed: int = 0
 
     @property

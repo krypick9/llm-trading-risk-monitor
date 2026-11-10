@@ -2,20 +2,26 @@
 The 8 fixed scenarios (the project plan's "8 fixed environment scenarios
 shared across all conditions").
 
-v2 (post-TA fixes) — calibrated 2026-11-10:
+v3 (post-feedback fixes) — calibrated 2026-11-10:
   Q1 fix: spread from Bybit real data (median 0.009 bps, not 2 bps artifact)
   Q1 fix: depth from Bybit near_depth (~123 BTC, not 50k BTC full-book)
   Q2 fix: stress scenarios use ReplayIndexPrice (historical path replay)
-          instead of GBM + single-step shock. The -13.15% daily drawdown
-          was being applied as a 1-min jump (~100σ). Now the crash unfolds
-          at its real intraday pace (worst 1-min move: -0.53%).
   Q4 fix: zero returns retained in all statistics
-  Q6 fix: calibrated with 3 seeds (42, 123, 456); best params selected
-  Q6 fix: 8-day held-out validation (Oct 10-21) for out-of-sample check
+  Q6 fix: calibrated with 3 seeds; 8-day held-out validation
+
+  v3 fix (Feedback #1): stress regime now uses the EXTREME Oct 10 crash path
+    (12:00-22:00 UTC, max DD -15.47%, max 1-min -5.13%) instead of the gentle
+    Oct 9 path (DD -1.77%). This ensures liquidations and cascades actually
+    occur, which is essential for the core research question.
+
+    The "stress" regime label now maps to the "extreme" replay path.
+    The original Oct 9 path is retained as "moderate" for reference but
+    not used in the main 8-scenario design.
 
 Calibration result:
   Normal: best fit=19.08 (sigma=0.002334, depth=8.0 BTC, spread=3.5e-6)
-  Stress:  best fit=34.90 (sigma=0.002567, depth=4.0 BTC, spread=3.3e-6, replay=True)
+  Stress:  best fit=34.90 (sigma=0.002567, depth=4.0 BTC, spread=3.3e-6)
+    Stress replay: Oct 10 12:00 UTC (extreme crash, DD=-15.47%, max 1-min=-5.13%)
 
 The 2 x 2 x 2 = 8 factorial design:
     market state     : normal | stress
@@ -25,7 +31,7 @@ The 2 x 2 x 2 = 8 factorial design:
 
 from .config import Scenario
 
-# v2 calibrated parameters (best-fit from multi-seed grid search)
+# v3 calibrated parameters (best-fit from multi-seed grid search)
 # Sources: teammate's 22-day Bybit + Binance data (data/processed/calibration_targets.json)
 _REGIMES = {
     "normal": dict(
@@ -47,8 +53,12 @@ _REGIMES = {
         shock_return=-0.003086,         # Q2 fix: max 1-min return on stress days
         bg_walkaway=True,
         bg_half_spread=3.3e-06,         # Q1 fix: calibrated from real Bybit spread
-        use_replay=True,                # Q2 fix: replay real Oct 9 crash path
-        replay_regime="stress",
+        use_replay=True,                # Q2 fix: replay real crash path
+        # v3 fix (Feedback #1): use "extreme" path (Oct 10 12:00 UTC)
+        # This path has DD=-15.47% and max 1-min=-5.13%, which WILL trigger
+        # liquidations at 15x+ leverage. The old "stress" path (Oct 9,
+        # DD=-1.77%) was too gentle to produce any liquidations.
+        replay_regime="extreme",
     ),
 }
 

@@ -132,6 +132,8 @@ class Exchange:
         self.bad_debt = 0.0
         self.last_liq_count = 0
         self.last_liq_notional = 0.0
+        self.circuit_breaker_active = False
+        self.circuit_breaker_until = 0
         self.records = []
         self.order_log = []            # (step, account, side, qty, price) for every trader order
         self.liquidation_log = []
@@ -227,6 +229,16 @@ class Exchange:
         self.book.expire(t)
         bg_factor = self._requote_background(t, stats)
 
+        # Circuit breaker check (Phase 2): activate if price deviates too far from index
+        if cfg.circuit_breaker_enabled:
+            if t >= self.circuit_breaker_until:  # not in cooldown
+                deviation = abs(self.last_price - self.index_price) / self.index_price
+                if deviation > cfg.circuit_breaker_pct:
+                    self.circuit_breaker_active = True
+                    self.circuit_breaker_until = t + cfg.circuit_breaker_cooldown_steps
+            elif t >= self.circuit_breaker_until:
+                self.circuit_breaker_active = False
+
         for action in actions:
             if isinstance(action, CancelAll):
                 self.book.cancel_account(action.account_id)
@@ -260,6 +272,12 @@ class Exchange:
         acct = self.accounts.get(req.account_id)
         if acct is None or req.qty <= 0 or req.side not in (BUY, SELL):
             return
+
+        # Circuit breaker check (Phase 2): reject market orders when active
+        if self.circuit_breaker_active and req.price is None and not acct.background:
+            stats.n_rejected += 1
+            return
+
         qty = self._floor_lot(req.qty)
         price = None if req.price is None else self.book.round_price(req.price)
 
