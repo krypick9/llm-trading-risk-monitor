@@ -1,28 +1,21 @@
 """
-Process downloaded raw data into calibration targets.
+Process real data into calibration targets — v2 (post-TA-meeting fixes).
 
-Reads:
-  raw/binance/aggTrades/*.csv      — aggregated trades (price, volume, timestamp)
-  raw/binance/bookDepth/*.csv      — order book depth snapshots
-  raw/hyperliquid/funding_*.json   — funding rate history
-  raw/hyperliquid/orderbook_*.json — live order book snapshot
-  raw/manifest.json                 — what was downloaded
+Key changes from v1:
+  Q1 fix: Spread and depth now come from teammate's Bybit orderbook data
+          (spread_bps_mean, near_depth_usd) instead of the broken Binance
+          bookDepth band semantics. Binance bookDepth percentage bands are
+          ±1..±5 PERCENT (not bps), so the old code always computed |1-(-1)|=2 bps.
+  Q2 fix: Shock is now the max 1-min return from real data (not daily drawdown).
+          Daily drawdown (-13.15%) was being applied as a single-minute jump.
+  Q4 fix: Zero-return statistics are computed and reported (not discarded).
+  Q6 fix: Data is split into training (first 16 days) and held-out (last 6 days)
+          for out-of-sample validation.
 
-Computes and outputs:
-  data/processed/calibration_targets.json — the numbers to match in the simulator
-
-Calibration targets produced:
-  - sigma_hourly:       hourly realized volatility (normal vs stress)
-  - jump_rate_per_hour: frequency of jumps > 2 sigma
-  - jump_mean:          mean jump size (for negative jumps)
-  - jump_std:           std of jump sizes
-  - spread_rel:         relative bid-ask spread (median, p5, p95)
-  - depth_btc:          order book depth within 0.5% of mid (median, normal vs stress)
-  - funding_mean:       mean funding rate per hour
-  - funding_std:        std of funding rate
-  - funding_cap:        max absolute funding rate observed
-  - return_kurtosis:    kurtosis of minute returns (should be > 3 = fat tails)
-  - shock_examples:     largest intraday drops observed (for shock_return calibration)
+Data sources:
+  1. Teammate's 22-day Bybit orderbook CSV (spread, depth, mid price)
+  2. Teammate's 22-day Binance aggTrades 1-min CSV (OHLCV, volume)
+  3. Our 6-day Binance Vision raw data (fallback for funding rates)
 
 Usage:
   python compute_calibration_targets.py
@@ -32,9 +25,7 @@ import os
 import sys
 import json
 import math
-import glob
-from datetime import datetime, timedelta
-from collections import defaultdict
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -44,490 +35,500 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-RAW_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "raw"))
-PROCESSED_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "data", "processed"))
+REPO_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", ".."))
+REFERENCE_DIR = os.path.join(REPO_ROOT, "data", "reference")
+RAW_DIR = os.path.join(REPO_ROOT, "raw")
+PROCESSED_DIR = os.path.join(REPO_ROOT, "data", "processed")
 os.makedirs(PROCESSED_DIR, exist_ok=True)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def load_manifest():
-    path = os.path.join(RAW_DIR, "manifest.json")
-    if not os.path.exists(path):
-        print("[error] manifest.json not found. Run download_data.py first.")
+def safe_std(arr, ddof=0):
+    if len(arr) < 2:
+        return 0.0
+    return float(np.std(arr, ddof=ddof))
+
+
+def safe_mean(arr):
+    return float(np.mean(arr)) if len(arr) > 0 else 0.0
+
+
+def safe_median(arr):
+    return float(np.median(arr)) if len(arr) > 0 else 0.0
+
+
+def safe_percentile(arr, p):
+    return float(np.percentile(arr, p)) if len(arr) > 0 else 0.0
+
+
+def excess_kurtosis(arr):
+    arr = np.array(arr)
+    n = len(arr)
+    if n < 4:
+        return 0.0
+    mean = np.mean(arr)
+    std = np.std(arr, ddof=1)
+    if std == 0:
+        return 0.0
+    return float((1 / n) * np.sum(((arr - mean) / std) ** 4) - 3.0)
+
+
+def autocorrelation(x, lag=1):
+    x = np.array(x)
+    n = len(x)
+    if n <= lag:
+        return 0.0
+    mean = np.mean(x)
+    c0 = np.mean((x - mean) ** 2)
+    ck = np.mean((x[:n - lag] - mean) * (x[lag:] - mean))
+    return float(ck / c0) if c0 > 0 else 0.0
+
+
+# ---------------------------------------------------------------------------
+# 1. Load teammate's 22-day reference data
+# ---------------------------------------------------------------------------
+
+def load_reference_data():
+    """Load teammate's Bybit orderbook + Binance 1-min OHLCV data."""
+    bybit_path = os.path.join(REFERENCE_DIR, "bybit_orderbook_BTCUSDT_1min.csv")
+    binance_path = os.path.join(REFERENCE_DIR, "binance_aggTrades_BTCUSDT_1min.csv")
+
+    if not os.path.exists(bybit_path):
+        print(f"[error] Bybit data not found: {bybit_path}")
         sys.exit(1)
-    with open(path) as f:
-        return json.load(f)
+    if not os.path.exists(binance_path):
+        print(f"[error] Binance data not found: {binance_path}")
+        sys.exit(1)
 
+    print("Loading teammate reference data...")
+    bybit = pd.read_csv(bybit_path, parse_dates=["ts_utc"])
+    binance = pd.read_csv(binance_path, parse_dates=["ts_utc"])
 
-def ts_to_ms(ts_str):
-    """Parse a timestamp string to milliseconds."""
-    try:
-        return int(float(ts_str))
-    except (ValueError, TypeError):
-        return None
+    print(f"  Bybit:   {len(bybit)} rows, {bybit.ts_utc.dt.date.nunique()} days")
+    print(f"  Binance: {len(binance)} rows, {binance.ts_utc.dt.date.nunique()} days")
+
+    # Merge on timestamp (inner join — both sources should have the same minutes)
+    merged = pd.merge_asof(
+        bybit.sort_values("ts_utc"),
+        binance[["ts_utc", "close", "vol_usd", "signed_usd", "n_trades"]].sort_values("ts_utc"),
+        on="ts_utc",
+        direction="nearest",
+        tolerance=pd.Timedelta("1min"),
+    )
+    merged = merged.dropna(subset=["close"])
+    print(f"  Merged:  {len(merged)} rows, {merged.ts_utc.dt.date.nunique()} days")
+    print(f"  Date range: {merged.ts_utc.min()} to {merged.ts_utc.max()}")
+
+    return merged
+
 
 # ---------------------------------------------------------------------------
-# 1. Aggregated trades -> minute bars -> volatility, jumps, kurtosis
+# 2. Compute calibration targets from merged data
 # ---------------------------------------------------------------------------
 
-def process_agg_trades(csv_path: str, day: str) -> dict:
-    """Process one day of agg trades into minute bars and compute stats.
-    
-    Binance aggTrades columns:
-      agg_id, price, quantity, first_trade_id, last_trade_id, 
-      transact_time (ms), is_buyer_maker
-    """
-    print(f"  [process] {os.path.basename(csv_path)}")
-    
-    # Read CSV — column names vary slightly, handle gracefully
-    try:
-        df = pd.read_csv(csv_path, header=None,
-                         names=["agg_id", "price", "qty", "first_id", "last_id", "time_ms", "is_maker"],
-                         dtype={"price": float, "qty": float, "time_ms": int})
-    except Exception:
-        try:
-            df = pd.read_csv(csv_path)
-            if "price" not in df.columns or "quantity" not in df.columns:
-                df = pd.read_csv(csv_path, header=None)
-                df.columns = ["agg_id", "price", "qty", "first_id", "last_id", "time_ms", "is_maker"]
-                df["price"] = df["price"].astype(float)
-                df["qty"] = df["qty"].astype(float)
-                df["time_ms"] = df["time_ms"].astype(int)
-            else:
-                df["qty"] = df["quantity"].astype(float)
-                if "transact_time" in df.columns:
-                    df["time_ms"] = df["transact_time"].astype(int)
-                elif "timestamp" in df.columns:
-                    df["time_ms"] = df["timestamp"].astype(int)
-                if "is_buyer_maker" in df.columns:
-                    df["is_maker"] = df["is_buyer_maker"]
-        except Exception as e:
-            print(f"  [error] reading {csv_path}: {e}")
-            return None
-    
-    if "price" not in df.columns or len(df) == 0:
-        print(f"  [warn] no usable price data in {csv_path}")
-        return None
-    
-    # Convert timestamp to datetime
-    if "time_ms" in df.columns:
-        ts_col = "time_ms"
-    elif "transact_time" in df.columns:
-        ts_col = "transact_time"
-    elif "timestamp" in df.columns:
-        ts_col = "timestamp"
-    else:
-        print(f"  [warn] no timestamp column found, using row order")
-        return None
-    
-    df["datetime"] = pd.to_datetime(df[ts_col], unit="ms", utc=True)
-    df = df.sort_values("datetime")
-    
-    # Resample to 1-minute bars
-    df.set_index("datetime", inplace=True)
-    minute_bars = df["price"].resample("1min").ohlc()
-    minute_bars.columns = ["open", "high", "low", "close"]
-    minute_volumes = df["qty"].resample("1min").sum()
-    
-    # Drop empty minutes (no trades)
-    minute_bars = minute_bars.dropna()
-    
-    if len(minute_bars) < 60:
-        print(f"  [warn] only {len(minute_bars)} minutes of data")
-    
-    # Compute minute log returns
-    returns = np.log(minute_bars["close"] / minute_bars["close"].shift(1)).dropna()
-    
-    # --- Hourly volatility ---
-    # Group returns into hourly chunks, compute std, then annualize to per-hour
-    hourly_vols = []
-    for hour_start, group in returns.groupby(returns.index.floor("h")):
-        if len(group) >= 30:  # need at least 30 minutes of data
-            vol = group.std() * math.sqrt(60)  # scale minute std to hourly
-            hourly_vols.append(vol)
-    
-    if not hourly_vols:
-        hourly_vols = [returns.std() * math.sqrt(60)]
-    
-    sigma_hourly = float(np.median(hourly_vols))
-    sigma_p90 = float(np.percentile(hourly_vols, 90))
-    sigma_p10 = float(np.percentile(hourly_vols, 10))
-    
-    # --- Jumps: returns > 3 std ---
-    std_returns = returns.std()
-    jumps = returns[abs(returns) > 3 * std_returns]
-    hours_of_data = len(minute_bars) / 60.0
-    
-    if hours_of_data > 0 and len(jumps) > 0:
-        jump_rate = len(jumps) / hours_of_data
-        # Separate negative and positive jumps
+def compute_targets(df):
+    """Compute all calibration targets from the merged 22-day dataset."""
+
+    df = df.sort_values("ts_utc").reset_index(drop=True)
+    df["date"] = df.ts_utc.dt.date
+
+    # --- 1-min log returns (KEEP zeros — Q4 fix) ---
+    returns = np.diff(np.log(df["close"].values))
+    returns_all = returns  # keep zeros
+    returns_nonzero = returns[returns != 0]  # also compute non-zero variant for comparison
+
+    # --- Split into training and held-out ---
+    all_dates = sorted(df["date"].unique())
+    n_days = len(all_dates)
+    # Training: first ~70% of days, Held-out: last ~30%
+    split_idx = int(n_days * 0.7)
+    train_dates = set(all_dates[:split_idx])
+    held_dates = set(all_dates[split_idx:])
+
+    print(f"\n  Training days ({len(train_dates)}): {sorted(train_dates)}")
+    print(f"  Held-out days ({len(held_dates)}): {sorted(held_dates)}")
+
+    df_train = df[df["date"].isin(train_dates)]
+    df_held = df[df["date"].isin(held_dates)]
+
+    # --- Split into normal vs stress regimes ---
+    # Oct 8-10 = crash (stress); everything else = normal
+    stress_dates = {d for d in all_dates if hasattr(d, 'month') and d.month == 10 and 8 <= d.day <= 10}
+    normal_dates_train = train_dates - stress_dates
+    stress_dates_train = train_dates & stress_dates
+
+    print(f"  Normal training days: {sorted(normal_dates_train)}")
+    print(f"  Stress training days: {sorted(stress_dates_train)}")
+
+    # --- Compute regime-specific stats ---
+    targets = {}
+
+    for regime, dates_set in [("normal", normal_dates_train), ("stress", stress_dates_train)]:
+        if not dates_set:
+            print(f"  [warn] no {regime} training days, using all training data")
+            dates_set = train_dates
+
+        sub = df[df["date"].isin(dates_set)].sort_values("ts_utc")
+        if len(sub) < 60:
+            print(f"  [warn] only {len(sub)} rows for {regime}")
+            continue
+
+        # Returns
+        close_prices = sub["close"].values
+        regime_rets = np.diff(np.log(close_prices))
+
+        # Hourly volatility (keep zeros)
+        hourly_vols = []
+        for i in range(0, len(regime_rets), 60):
+            chunk = regime_rets[i:i + 60]
+            if len(chunk) >= 30:
+                hourly_vols.append(np.std(chunk) * math.sqrt(60))
+
+        sigma_hourly = safe_median(hourly_vols)
+        sigma_p90 = safe_percentile(hourly_vols, 90)
+
+        # Jumps: returns beyond 3 std (keep zeros)
+        std_r = np.std(regime_rets)
+        jumps = regime_rets[np.abs(regime_rets) > 3 * std_r] if std_r > 0 else np.array([])
+        hours = len(regime_rets) / 60.0
+        jump_rate = len(jumps) / hours if hours > 0 else 0
+
         neg_jumps = jumps[jumps < 0]
         pos_jumps = jumps[jumps > 0]
-        
-        if len(neg_jumps) > 0:
-            jump_mean = float(neg_jumps.mean())
-            jump_std = float(neg_jumps.std()) if len(neg_jumps) > 1 else 0.002
-        else:
-            jump_mean = -0.001
-            jump_std = 0.002
-    else:
-        jump_rate = 0.2
-        jump_mean = 0.0
-        jump_std = 0.002
-    
-    # --- Kurtosis (fat tails) ---
-    kurtosis = float(returns.kurtosis()) if len(returns) > 10 else 0.0
-    
-    # --- Largest intraday drop (for shock calibration) ---
-    if len(minute_bars) >= 10:
-        cumulative = minute_bars["close"]
-        max_drop = 0.0
-        peak = cumulative.iloc[0]
-        for p in cumulative:
-            peak = max(peak, p)
-            drop = (p - peak) / peak
-            max_drop = min(max_drop, drop)
-        shock_example = float(max_drop)
-    else:
-        shock_example = -0.02
-    
-    # --- Buyer-maker ratio (order flow) ---
-    if "is_maker" in df.columns:
-        is_maker = df["is_maker"].astype(bool)
-        sell_volume = df.loc[is_maker, "qty"].sum()  # buyer is maker => seller is taker => sell
-        buy_volume = df.loc[~is_maker, "qty"].sum()
-        total = sell_volume + buy_volume
-        ofi = float((buy_volume - sell_volume) / total) if total > 0 else 0.0
-    else:
-        ofi = 0.0
-    
-    return {
-        "day": day,
-        "n_trades": len(df),
-        "n_minutes": len(minute_bars),
-        "sigma_hourly": sigma_hourly,
-        "sigma_p10": sigma_p10,
-        "sigma_p90": sigma_p90,
-        "jump_rate_per_hour": float(jump_rate),
-        "jump_mean": jump_mean,
-        "jump_std": jump_std,
-        "return_kurtosis": kurtosis,
-        "shock_example": shock_example,
-        "order_flow_imbalance": ofi,
-        "price_open": float(minute_bars["open"].iloc[0]),
-        "price_close": float(minute_bars["close"].iloc[-1]),
-        "total_volume_btc": float(df["qty"].sum()),
+        jump_mean = float(np.mean(neg_jumps)) if len(neg_jumps) > 0 else 0.0
+        jump_std = float(np.std(neg_jumps)) if len(neg_jumps) > 1 else 0.0
+
+        # Kurtosis (both with and without zeros — Q4 fix)
+        kurt_with_zeros = excess_kurtosis(regime_rets)
+        kurt_without_zeros = excess_kurtosis(regime_rets[regime_rets != 0])
+
+        # Volatility clustering (ACF of squared returns — both variants)
+        sq_rets_all = regime_rets ** 2
+        sq_rets_nonzero = regime_rets[regime_rets != 0] ** 2
+        acf1_with_zeros = autocorrelation(sq_rets_all, lag=1)
+        acf1_without_zeros = autocorrelation(sq_rets_nonzero, lag=1)
+
+        # Order flow imbalance ACF
+        ofi = sub["signed_usd"].values / (sub["vol_usd"].values + 1e-12)
+        ofi = ofi[~np.isnan(ofi)]
+        ofi_acf1 = autocorrelation(ofi, lag=1) if len(ofi) > 2 else 0.0
+
+        # Spread (from Bybit spread_bps_mean — Q1 fix)
+        spread_bps = sub["spread_bps_mean"].values
+        spread_rel_median = safe_median(spread_bps) / 10000.0  # bps to fraction
+        spread_rel_p5 = safe_percentile(spread_bps, 5) / 10000.0
+        spread_rel_p95 = safe_percentile(spread_bps, 95) / 10000.0
+
+        # Depth (from Bybit near_depth_usd, converted to BTC — Q1 fix)
+        depth_btc = sub["near_depth_usd"].values / sub["mid_bybit"].values
+        depth_median = safe_median(depth_btc)
+        depth_p10 = safe_percentile(depth_btc, 10)
+        depth_p90 = safe_percentile(depth_btc, 90)
+
+        # Shock: max 1-min negative return (Q2 fix — not daily drawdown!)
+        max_neg_1min = float(regime_rets.min())
+        max_pos_1min = float(regime_rets.max())
+
+        # Also compute daily drawdown for reference (but don't use as shock)
+        cum = np.maximum.accumulate(close_prices)
+        dd = (close_prices - cum) / cum
+        max_drawdown = float(dd.min())
+
+        # Zero returns stats
+        n_zero = int(np.sum(regime_rets == 0))
+        zero_pct = n_zero / len(regime_rets) * 100 if len(regime_rets) > 0 else 0
+
+        targets[regime] = {
+            "sigma_hourly": sigma_hourly,
+            "sigma_p90": sigma_p90,
+            "jump_rate_per_hour": float(jump_rate),
+            "jump_mean": jump_mean,
+            "jump_std": jump_std,
+            # Q2 fix: shock is the max 1-min return, NOT daily drawdown
+            "shock_return_1min": max_neg_1min,
+            "shock_return_1min_pct": max_neg_1min * 100,
+            # For reference only (what the old code used):
+            "max_drawdown_daily": max_drawdown,
+            "max_drawdown_daily_pct": max_drawdown * 100,
+            # Spread (Q1 fix: from Bybit spread_bps_mean)
+            "spread_bps_median": safe_median(spread_bps),
+            "spread_rel": spread_rel_median,
+            "spread_rel_p5": spread_rel_p5,
+            "spread_rel_p95": spread_rel_p95,
+            # Depth (Q1 fix: from Bybit near_depth within ~0.5%)
+            "depth_btc": depth_median,
+            "depth_p10": depth_p10,
+            "depth_p90": depth_p90,
+            # Q4 fix: kurtosis both with and without zeros
+            "kurtosis_with_zeros": kurt_with_zeros,
+            "kurtosis_without_zeros": kurt_without_zeros,
+            "vol_clustering_acf1_with_zeros": acf1_with_zeros,
+            "vol_clustering_acf1_without_zeros": acf1_without_zeros,
+            "order_flow_acf1": ofi_acf1,
+            "zero_return_pct": zero_pct,
+            "n_zero_returns": n_zero,
+            "n_total_returns": len(regime_rets),
+            "max_pos_1min_return": max_pos_1min,
+            "training_days": sorted(str(d) for d in dates_set),
+        }
+
+    # --- Full dataset stats ---
+    all_hourly_vols = []
+    for i in range(0, len(returns_all), 60):
+        chunk = returns_all[i:i + 60]
+        if len(chunk) >= 30:
+            all_hourly_vols.append(np.std(chunk) * math.sqrt(60))
+
+    targets["full_dataset"] = {
+        "n_days": n_days,
+        "n_minutes": len(df),
+        "n_returns": len(returns_all),
+        "sigma_hourly": safe_median(all_hourly_vols),
+        "kurtosis_with_zeros": excess_kurtosis(returns_all),
+        "kurtosis_without_zeros": excess_kurtosis(returns_nonzero),
+        "vol_clustering_acf1_with_zeros": autocorrelation(returns_all ** 2, 1),
+        "vol_clustering_acf1_without_zeros": autocorrelation(returns_nonzero ** 2, 1),
+        "zero_return_pct": float(np.sum(returns_all == 0) / len(returns_all) * 100),
+        "max_neg_1min": float(returns_all.min()),
+        "max_pos_1min": float(returns_all.max()),
+        "max_drawdown": float(((df.close.values - np.maximum.accumulate(df.close.values)) /
+                                np.maximum.accumulate(df.close.values)).min()),
     }
 
+    # --- Held-out validation stats ---
+    if len(df_held) > 60:
+        held_close = df_held["close"].values
+        held_rets = np.diff(np.log(held_close))
+        held_hourly_vols = []
+        for i in range(0, len(held_rets), 60):
+            chunk = held_rets[i:i + 60]
+            if len(chunk) >= 30:
+                held_hourly_vols.append(np.std(chunk) * math.sqrt(60))
 
-# ---------------------------------------------------------------------------
-# 2. Order book depth snapshots -> spread, depth
-# ---------------------------------------------------------------------------
+        targets["held_out"] = {
+            "days": sorted(str(d) for d in held_dates),
+            "n_days": len(held_dates),
+            "n_minutes": len(df_held),
+            "sigma_hourly": safe_median(held_hourly_vols),
+            "kurtosis_with_zeros": excess_kurtosis(held_rets),
+            "kurtosis_without_zeros": excess_kurtosis(held_rets[held_rets != 0]),
+            "vol_clustering_acf1_with_zeros": autocorrelation(held_rets ** 2, 1),
+            "vol_clustering_acf1_without_zeros": autocorrelation(held_rets[held_rets != 0] ** 2, 1),
+            "zero_return_pct": float(np.sum(held_rets == 0) / len(held_rets) * 100),
+            "spread_bps_median": safe_median(df_held["spread_bps_mean"].values),
+            "depth_btc_median": safe_median(df_held["near_depth_usd"].values / df_held["mid_bybit"].values),
+            "max_neg_1min": float(held_rets.min()),
+            "max_drawdown": float(((held_close - np.maximum.accumulate(held_close)) /
+                                    np.maximum.accumulate(held_close)).min()),
+        }
 
-def process_book_depth(csv_path: str, day: str) -> dict:
-    """Process order book depth snapshots.
-    
-    Binance bookDepth CSV format:
-      timestamp, percentage, depth (BTC), notional (USD)
-    Where percentage = distance from mid price in basis points (negative = bid side)
-    Each row = one snapshot at one percentage level.
-    Multiple rows with same timestamp = one full snapshot.
-    """
-    print(f"  [process] {os.path.basename(csv_path)}")
-    
-    try:
-        df = pd.read_csv(csv_path)
-    except Exception as e:
-        print(f"  [error] reading {csv_path}: {e}")
-        return None
-    
-    if len(df) == 0:
-        return None
-    
-    # Check expected columns
-    if "percentage" not in df.columns or "depth" not in df.columns:
-        print(f"  [warn] unexpected columns: {list(df.columns)}")
-        return None
-    
-    # Group by timestamp to get individual snapshots
-    # Within each snapshot, percentage ranges from -20 to +20 (bps from mid)
-    # We want depth within 0.5% = 50 bps of mid
-    spreads = []
-    depths_05pct = []
-    depths_bid = []
-    depths_ask = []
-    
-    for ts, group in df.groupby("timestamp"):
-        # Depth within 0.5% (50 bps) of mid
-        bid_depth = group[(group["percentage"] >= -50) & (group["percentage"] < 0)]["depth"].sum()
-        ask_depth = group[(group["percentage"] > 0) & (group["percentage"] <= 50)]["depth"].sum()
-        
-        total_05 = bid_depth + ask_depth
-        if total_05 > 0:
-            depths_bid.append(float(bid_depth))
-            depths_ask.append(float(ask_depth))
-            depths_05pct.append(float(total_05))
-            
-            # Estimate spread from the closest bid/ask levels
-            closest_bid = group[group["percentage"] < 0]["percentage"].max() if len(group[group["percentage"] < 0]) > 0 else -1
-            closest_ask = group[group["percentage"] > 0]["percentage"].min() if len(group[group["percentage"] > 0]) > 0 else 1
-            # Spread in bps -> relative
-            spread_bps = abs(closest_ask - closest_bid)
-            spreads.append(spread_bps / 10000.0)  # bps to fraction
-    
-    if not depths_05pct:
-        print(f"  [warn] no usable depth data in {csv_path}")
-        return None
-    
-    return {
-        "day": day,
-        "n_snapshots": len(depths_05pct),
-        "spread_rel_median": float(np.median(spreads)),
-        "spread_rel_p5": float(np.percentile(spreads, 5)),
-        "spread_rel_p95": float(np.percentile(spreads, 95)),
-        "depth_bid_median": float(np.median(depths_bid)),
-        "depth_ask_median": float(np.median(depths_ask)),
-        "depth_total_median": float(np.median(depths_05pct)),
-        "depth_total_p10": float(np.percentile(depths_05pct, 10)),
-        "depth_total_p90": float(np.percentile(depths_05pct, 90)),
+    # --- Funding (from our raw data if available, otherwise defaults) ---
+    funding = load_funding()
+    targets["funding"] = funding
+
+    # --- Metadata ---
+    targets["_meta"] = {
+        "data_source": "teammate_bybit_orderbook + teammate_binance_aggTrades_1min",
+        "data_period": f"{df.ts_utc.min()} to {df.ts_utc.max()}",
+        "n_days": n_days,
+        "train_split": f"first {split_idx} days ({len(train_dates)} days)",
+        "held_out_split": f"last {n_days - split_idx} days ({len(held_dates)} days)",
+        "stress_definition": "Oct 8-10 2025 (BTC crash period)",
+        "zero_returns": "RETAINED in all statistics (Q4 fix)",
+        "shock_definition": "max 1-min log return (Q2 fix: NOT daily drawdown)",
+        "spread_source": "Bybit spread_bps_mean (Q1 fix: NOT Binance bookDepth artifact)",
+        "depth_source": "Bybit near_depth_usd / mid (Q1 fix: NOT full-book sum)",
+        "generated_at": datetime.utcnow().isoformat(),
     }
 
+    return targets
+
 
 # ---------------------------------------------------------------------------
-# 3. Funding rates -> mean, std, cap
+# 3. Funding (from raw data if available)
 # ---------------------------------------------------------------------------
 
-def process_funding(funding_path: str) -> dict:
-    """Process funding rate history."""
-    if not funding_path or not os.path.exists(funding_path):
-        print(f"  [warn] no funding data, using estimates")
+def load_funding():
+    """Load funding rates from our downloaded Hyperliquid data."""
+    funding_path = os.path.join(RAW_DIR, "hyperliquid", "funding_history.json")
+    if not os.path.exists(funding_path):
+        print(f"  [info] no funding data at {funding_path}, using defaults")
         return {
             "funding_mean": 0.0000125,
             "funding_std": 0.0001,
-            "funding_cap": 0.04,
+            "funding_cap": 0.0000125,
             "n_records": 0,
+            "source": "default",
         }
-    
+
     with open(funding_path) as f:
         data = json.load(f)
-    
+
     if isinstance(data, list) and len(data) > 0:
-        # Could be Hyperliquid format or Binance format
         rates = []
         for rec in data:
             if isinstance(rec, dict):
                 rate = rec.get("fundingRate") or rec.get("funding_rate") or rec.get("rate")
                 if rate is not None:
                     rates.append(float(rate))
-        
-        if not rates:
-            return {"funding_mean": 0.0000125, "funding_std": 0.0001, "funding_cap": 0.04, "n_records": 0}
-        
-        rates = np.array(rates)
-        return {
-            "funding_mean": float(np.mean(rates)),
-            "funding_std": float(np.std(rates)),
-            "funding_cap": float(max(abs(rates.min()), abs(rates.max()))),
-            "funding_p95": float(np.percentile(np.abs(rates), 95)),
-            "n_records": len(rates),
-        }
-    
-    return {"funding_mean": 0.0000125, "funding_std": 0.0001, "funding_cap": 0.04, "n_records": 0}
 
+        if rates:
+            rates = np.array(rates)
+            return {
+                "funding_mean": float(np.mean(rates)),
+                "funding_std": float(np.std(rates)),
+                "funding_cap": float(max(abs(rates.min()), abs(rates.max()))),
+                "funding_p95": float(np.percentile(np.abs(rates), 95)),
+                "n_records": len(rates),
+                "source": "hyperliquid_api",
+            }
 
-# ---------------------------------------------------------------------------
-# 4. Hyperliquid live order book (depth reference)
-# ---------------------------------------------------------------------------
-
-def process_hyperliquid_orderbook() -> dict:
-    """Process live Hyperliquid order book snapshot for BTC depth reference.
-    
-    Hyperliquid l2Book format:
-      {"coin": "BTC", "time": ..., "levels": [[bid_levels], [ask_levels]]}
-    where each level is {"px": "78000", "sz": "1.5", "n": 3}
-    levels[0] = bids (sorted descending), levels[1] = asks (sorted ascending)
-    """
-    path = os.path.join(RAW_DIR, "hyperliquid", "orderbook_snapshot.json")
-    if not os.path.exists(path):
-        return None
-    
-    with open(path) as f:
-        data = json.load(f)
-    
-    levels = data.get("levels", [])
-    if not levels or len(levels) < 2:
-        return None
-    
-    bid_levels = levels[0] if isinstance(levels[0], list) else []
-    ask_levels = levels[1] if isinstance(levels[1], list) else []
-    
-    bids = [(float(l["px"]), float(l["sz"])) for l in bid_levels if "px" in l and "sz" in l]
-    asks = [(float(l["px"]), float(l["sz"])) for l in ask_levels if "px" in l and "sz" in l]
-    
-    if not bids or not asks:
-        return None
-    
-    best_bid = max(b[0] for b in bids)
-    best_ask = min(a[0] for a in asks)
-    mid = (best_bid + best_ask) / 2
-    spread = (best_ask - best_bid) / mid
-    
-    depth_bid_05 = sum(sz for px, sz in bids if (mid - px) / mid <= 0.005)
-    depth_ask_05 = sum(sz for px, sz in asks if (px - mid) / mid <= 0.005)
-    
     return {
-        "source": "hyperliquid_live",
-        "mid_price": float(mid),
-        "spread_rel": float(spread),
-        "depth_bid_05pct": float(depth_bid_05),
-        "depth_ask_05pct": float(depth_ask_05),
-        "depth_total_05pct": float(depth_bid_05 + depth_ask_05),
-        "n_bid_levels": len(bids),
-        "n_ask_levels": len(asks),
+        "funding_mean": 0.0000125,
+        "funding_std": 0.0001,
+        "funding_cap": 0.0000125,
+        "n_records": 0,
+        "source": "default",
     }
 
 
 # ---------------------------------------------------------------------------
-# Main: aggregate everything into calibration targets
+# 4. Extract price paths for replay (Q2 fix)
+# ---------------------------------------------------------------------------
+
+def extract_replay_paths(df):
+    """Extract real 1-min close price paths for historical replay.
+
+    Returns dict with normal and stress paths (first 600 minutes each).
+    """
+    df = df.sort_values("ts_utc").reset_index(drop=True)
+    df["date"] = df.ts_utc.dt.date
+
+    # Normal: pick a representative calm day from training set
+    normal_dates = sorted([d for d in df.date.unique() if not (d.month == 10 and 8 <= d.day <= 10)])
+    # Use Sep 24 as the normal replay day (first available)
+    normal_day = normal_dates[0] if normal_dates else None
+
+    # Stress: Oct 9 (crash day)
+    stress_day = None
+    for d in df.date.unique():
+        if d.month == 10 and d.day == 9:
+            stress_day = d
+            break
+
+    replay = {}
+    for regime, day in [("normal", normal_day), ("stress", stress_day)]:
+        if day is None:
+            print(f"  [warn] no replay day for {regime}")
+            continue
+
+        sub = df[df.date == day].sort_values("ts_utc")
+        if len(sub) < 600:
+            print(f"  [warn] only {len(sub)} minutes for {regime} replay day {day}")
+            # Use what we have, pad with last value
+            prices = list(sub["close"].values)
+            while len(prices) < 600:
+                prices.append(prices[-1])
+            prices = prices[:600]
+        else:
+            prices = list(sub["close"].values[:600])
+
+        replay[regime] = {
+            "date": str(day),
+            "n_steps": len(prices),
+            "start_price": float(prices[0]),
+            "end_price": float(prices[-1]),
+            "max_drawdown": float(min(
+                (prices[i] - max(prices[:i + 1])) / max(prices[:i + 1])
+                for i in range(len(prices))
+            )),
+            "min_1min_return": float(min(
+                math.log(prices[i + 1] / prices[i])
+                for i in range(len(prices) - 1)
+            )),
+            "prices": [float(p) for p in prices],
+        }
+        print(f"  Replay {regime}: day={day}, {len(prices)} steps, "
+              f"start=${prices[0]:.0f}, end=${prices[-1]:.0f}, "
+              f"min 1-min ret={replay[regime]['min_1min_return']:.4f}")
+
+    return replay
+
+
+# ---------------------------------------------------------------------------
+# Main
 # ---------------------------------------------------------------------------
 
 def main():
-    manifest = load_manifest()
-    
-    print("=" * 60)
-    print("Calibration Target Extraction")
-    print("=" * 60)
-    
-    dates = manifest.get("dates", {})
-    trade_files = manifest.get("trade_files", {})
-    depth_files = manifest.get("depth_files", {})
-    funding_file = manifest.get("funding_file")
-    
-    # Separate normal and stress dates
-    normal_days = [d for d, regime in dates.items() if regime == "normal"]
-    stress_days = [d for d, regime in dates.items() if regime == "stress"]
-    
-    print(f"\nNormal days: {normal_days}")
-    print(f"Stress days: {stress_days}")
-    
-    # Process trades
-    print(f"\n--- Processing aggregated trades ---")
-    trade_stats = {}
-    for day, path in trade_files.items():
-        stats = process_agg_trades(path, day)
-        if stats:
-            trade_stats[day] = stats
-    
-    # Process depth
-    print(f"\n--- Processing order book depth ---")
-    depth_stats = {}
-    for day, path in depth_files.items():
-        stats = process_book_depth(path, day)
-        if stats:
-            depth_stats[day] = stats
-    
-    # Process funding
-    print(f"\n--- Processing funding rates ---")
-    funding_stats = process_funding(funding_file)
-    
-    # Process Hyperliquid live order book
-    print(f"\n--- Processing Hyperliquid live order book ---")
-    hl_book = process_hyperliquid_orderbook()
-    
-    # --- Aggregate into normal vs stress ---
-    print(f"\n--- Aggregating calibration targets ---")
-    
-    normal_trade = [trade_stats[d] for d in normal_days if d in trade_stats]
-    stress_trade = [trade_stats[d] for d in stress_days if d in trade_stats]
-    normal_depth = [depth_stats[d] for d in normal_days if d in depth_stats]
-    stress_depth = [depth_stats[d] for d in stress_days if d in depth_stats]
-    
-    def safe_median(lst, key, default=0):
-        vals = [x.get(key, default) for x in lst if x]
-        return float(np.median(vals)) if vals else default
-    
-    def safe_percentile(lst, key, p, default=0):
-        vals = [x.get(key, default) for x in lst if x]
-        return float(np.percentile(vals, p)) if vals else default
-    
-    targets = {
-        "_meta": {
-            "normal_days": normal_days,
-            "stress_days": stress_days,
-            "n_trade_days": len(trade_stats),
-            "n_depth_days": len(depth_stats),
-            "generated_at": datetime.utcnow().isoformat(),
-        },
-        "normal": {
-            "sigma_hourly": safe_median(normal_trade, "sigma_hourly", 0.005),
-            "sigma_p90": safe_percentile(normal_trade, "sigma_hourly", 90, 0.008),
-            "jump_rate_per_hour": safe_median(normal_trade, "jump_rate_per_hour", 0.2),
-            "jump_mean": safe_median(normal_trade, "jump_mean", 0.0),
-            "jump_std": safe_median(normal_trade, "jump_std", 0.002),
-            "shock_return": safe_percentile(normal_trade, "shock_example", 10, -0.008),
-            "spread_rel": safe_median(normal_depth, "spread_rel_median", 0.0001),
-            "depth_btc": safe_median(normal_depth, "depth_total_median", 100.0),
-            "depth_p10": safe_percentile(normal_depth, "depth_total_median", 10, 50.0),
-        },
-        "stress": {
-            "sigma_hourly": safe_median(stress_trade, "sigma_hourly", 0.012),
-            "sigma_p90": safe_percentile(stress_trade, "sigma_hourly", 90, 0.025),
-            "jump_rate_per_hour": safe_median(stress_trade, "jump_rate_per_hour", 1.0),
-            "jump_mean": safe_median(stress_trade, "jump_mean", -0.001),
-            "jump_std": safe_median(stress_trade, "jump_std", 0.005),
-            "shock_return": safe_percentile(stress_trade, "shock_example", 10, -0.06),
-            "spread_rel": safe_median(stress_depth, "spread_rel_median", 0.0002),
-            "depth_btc": safe_median(stress_depth, "depth_total_median", 50.0),
-            "depth_p10": safe_percentile(stress_depth, "depth_total_median", 10, 10.0),
-        },
-        "funding": funding_stats,
-        "stylized_facts": {
-            "return_kurtosis_normal": safe_median(normal_trade, "return_kurtosis", 3.0),
-            "return_kurtosis_stress": safe_median(stress_trade, "return_kurtosis", 5.0),
-        },
-        "hyperliquid_reference": hl_book,
-        "raw_trade_stats": {d: {k: v for k, v in s.items()} for d, s in trade_stats.items()},
-        "raw_depth_stats": {d: {k: v for k, v in s.items()} for d, s in depth_stats.items()},
-    }
-    
+    print("=" * 70)
+    print("Calibration Target Extraction v2 (post-TA fixes)")
+    print("=" * 70)
+
+    # Load data
+    df = load_reference_data()
+
+    # Compute targets
+    print("\n--- Computing calibration targets ---")
+    targets = compute_targets(df)
+
+    # Extract replay paths
+    print("\n--- Extracting price paths for historical replay ---")
+    replay = extract_replay_paths(df)
+    targets["replay_paths"] = replay
+
     # Save
     out_path = os.path.join(PROCESSED_DIR, "calibration_targets.json")
     with open(out_path, "w") as f:
         json.dump(targets, f, indent=2, default=str)
-    
-    print(f"\n{'=' * 60}")
-    print("Calibration targets computed:")
-    print(f"\n  Normal regime:")
-    print(f"    sigma_hourly:     {targets['normal']['sigma_hourly']:.5f} ({targets['normal']['sigma_hourly']*100:.2f}%/h)")
-    print(f"    jump_rate/hour:   {targets['normal']['jump_rate_per_hour']:.2f}")
-    print(f"    spread_rel:       {targets['normal']['spread_rel']:.6f} ({targets['normal']['spread_rel']*100:.4f}%)")
-    print(f"    depth_btc:        {targets['normal']['depth_btc']:.1f} BTC")
-    print(f"    shock_return:     {targets['normal']['shock_return']:.4f} ({targets['normal']['shock_return']*100:.2f}%)")
-    
-    print(f"\n  Stress regime:")
-    print(f"    sigma_hourly:     {targets['stress']['sigma_hourly']:.5f} ({targets['stress']['sigma_hourly']*100:.2f}%/h)")
-    print(f"    jump_rate/hour:   {targets['stress']['jump_rate_per_hour']:.2f}")
-    print(f"    spread_rel:       {targets['stress']['spread_rel']:.6f} ({targets['stress']['spread_rel']*100:.4f}%)")
-    print(f"    depth_btc:        {targets['stress']['depth_btc']:.1f} BTC")
-    print(f"    shock_return:     {targets['stress']['shock_return']:.4f} ({targets['stress']['shock_return']*100:.2f}%)")
-    
-    print(f"\n  Funding:")
-    print(f"    mean:             {targets['funding']['funding_mean']:.8f}/h")
-    print(f"    cap:              {targets['funding']['funding_cap']:.6f}/h")
-    
-    print(f"\n  Stylized facts:")
-    print(f"    kurtosis (normal):{targets['stylized_facts']['return_kurtosis_normal']:.2f} (should be > 3)")
-    print(f"    kurtosis (stress):{targets['stylized_facts']['return_kurtosis_stress']:.2f} (should be > 3)")
-    
-    if hl_book:
-        print(f"\n  Hyperliquid live reference:")
-        print(f"    mid_price:        ${hl_book['mid_price']:,.0f}")
-        print(f"    spread_rel:       {hl_book['spread_rel']:.8f}")
-        print(f"    depth_05pct:      {hl_book['depth_total_05pct']:.1f} BTC")
-    
+
+    # Save replay paths separately for the engine to load
+    replay_path = os.path.join(PROCESSED_DIR, "replay_prices.json")
+    with open(replay_path, "w") as f:
+        json.dump(replay, f, indent=2)
+
+    # Print summary
+    print(f"\n{'=' * 70}")
+    print("Calibration targets v2 computed:")
+    for regime in ["normal", "stress"]:
+        if regime not in targets:
+            continue
+        t = targets[regime]
+        print(f"\n  {regime.upper()} regime (training days: {t['training_days']}):")
+        print(f"    sigma_hourly:       {t['sigma_hourly']:.6f} ({t['sigma_hourly']*100:.3f}%/h)")
+        print(f"    jump_rate/hour:     {t['jump_rate_per_hour']:.3f}")
+        print(f"    jump_mean:          {t['jump_mean']:.6f}")
+        print(f"    jump_std:           {t['jump_std']:.6f}")
+        print(f"    spread_bps:         {t['spread_bps_median']:.4f} bps (Q1 fix: from Bybit)")
+        print(f"    spread_rel:         {t['spread_rel']:.8f}")
+        print(f"    depth_btc:          {t['depth_btc']:.1f} BTC (Q1 fix: 0.5% band)")
+        print(f"    depth_p10:          {t['depth_p10']:.1f} BTC")
+        print(f"    shock_1min:         {t['shock_return_1min']:.6f} ({t['shock_return_1min_pct']:.2f}%) (Q2 fix)")
+        print(f"    max_drawdown_daily: {t['max_drawdown_daily']:.6f} ({t['max_drawdown_daily_pct']:.2f}%) (reference only)")
+        print(f"    kurtosis (w/ zeros):{t['kurtosis_with_zeros']:.2f} (Q4 fix)")
+        print(f"    kurtosis (no zeros):{t['kurtosis_without_zeros']:.2f}")
+        print(f"    vol_acf1 (w/ zeros):{t['vol_clustering_acf1_with_zeros']:.4f}")
+        print(f"    vol_acf1 (no zeros):{t['vol_clustering_acf1_without_zeros']:.4f}")
+        print(f"    ofi_acf1:           {t['order_flow_acf1']:.4f}")
+        print(f"    zero_return_pct:    {t['zero_return_pct']:.2f}%")
+
+    if "held_out" in targets:
+        h = targets["held_out"]
+        print(f"\n  HELD-OUT validation ({h['n_days']} days):")
+        print(f"    sigma_hourly:       {h['sigma_hourly']:.6f}")
+        print(f"    kurtosis (w/ zeros):{h['kurtosis_with_zeros']:.2f}")
+        print(f"    vol_acf1 (w/ zeros):{h['vol_clustering_acf1_with_zeros']:.4f}")
+        print(f"    spread_bps:         {h['spread_bps_median']:.4f}")
+        print(f"    depth_btc:          {h['depth_btc_median']:.1f} BTC")
+
+    print(f"\n  Full dataset: {targets['full_dataset']['n_days']} days, "
+          f"{targets['full_dataset']['n_returns']} returns, "
+          f"zero_return_pct={targets['full_dataset']['zero_return_pct']:.2f}%")
+
     print(f"\nSaved to {out_path}")
+    print(f"Replay paths saved to {replay_path}")
     print(f"\nNext step: run run_calibration.py")
 
 
