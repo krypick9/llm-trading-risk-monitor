@@ -22,7 +22,7 @@ from typing import Optional
 
 from .accounts import Account
 from .config import Scenario, SimConfig
-from .index_price import IndexPriceProcess
+from .index_price import IndexPriceProcess, ReplayIndexPrice
 from .orderbook import BUY, EPS, SELL, Order, OrderBook
 from .records import StepRecord
 
@@ -113,7 +113,13 @@ class Exchange:
         self.scenario = scenario
         # Separate random streams: the reference price path must be identical
         # for a given (scenario, seed) no matter how many traders are present.
-        self.index = IndexPriceProcess(cfg, scenario, random.Random(f"{cfg.seed}|index"))
+        # Q2 fix: use historical replay if the scenario requests it,
+        # otherwise use synthetic GBM. Either way the path is deterministic
+        # for a given (scenario, seed) — it never depends on who trades.
+        if getattr(scenario, "use_replay", False):
+            self.index = ReplayIndexPrice(cfg, scenario, random.Random(f"{cfg.seed}|index"))
+        else:
+            self.index = IndexPriceProcess(cfg, scenario, random.Random(f"{cfg.seed}|index"))
         self.rng_arrival = random.Random(f"{cfg.seed}|arrival")
         self.book = OrderBook(cfg.tick_size)
         self.accounts = {}

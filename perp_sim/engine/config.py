@@ -1,10 +1,12 @@
 """
 Settings for one simulation run.
 
-Calibrated against real BTC perpetual futures data:
-  - Binance Vision aggTrades + bookDepth (6 days: 3 normal, 3 stress)
-  - Hyperliquid API (funding history + live L2 orderbook)
-  - Calibration date: Nov 2025
+v2 (post-TA fixes) — calibrated against teammate's 22-day real data:
+  - Bybit orderbook: spread_bps_mean, near_depth_usd (Q1 fix)
+  - Binance aggTrades: 1-min OHLCV for volatility, jumps, kurtosis
+  - Historical path replay for stress regime (Q2 fix)
+  - Zero returns retained in all statistics (Q4 fix)
+  - Multi-seed calibration + 8-day held-out validation (Q6 fix)
 
 The mini-market design (Decision #1, Section 3.6 of FYP plan):
   Agents have $1000 collateral each. Background depth is scaled so that
@@ -93,6 +95,10 @@ class Scenario:
     bg_depth_btc: float         # background liquidity per side, in BTC
     bg_half_spread: float       # background quotes sit this far from the centre
     bg_walkaway: bool           # background liquidity retreats when prices move fast
+
+    # Q2 fix: historical path replay
+    use_replay: bool = False   # if True, replay real BTC price path instead of GBM
+    replay_regime: str = ""    # which replay path to use ("normal" or "stress")
 
     def shock_step(self, n_steps: int) -> int | None:
         if self.shock_frac is None:
