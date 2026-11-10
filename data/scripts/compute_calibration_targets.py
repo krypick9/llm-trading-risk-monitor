@@ -402,41 +402,54 @@ def load_funding():
 def extract_replay_paths(df):
     """Extract real 1-min close price paths for historical replay.
 
-    Returns dict with normal and stress paths (first 600 minutes each).
+    Returns dict with three paths:
+      - normal: Sep 24 (calm day, first 600 min)
+      - stress: Oct 9 (moderate stress, first 600 min, DD -1.77%)
+      - extreme: Oct 10 12:00-22:00 UTC (severe crash, DD -15.47%, max 1-min -5.13%)
+
+    The "extreme" path is critical for triggering liquidations and cascades.
+    At 20x leverage with 1% maintenance margin, liquidation triggers at ~6%
+    drop from entry. The extreme path has a -15.47% drawdown, ensuring
+    that leveraged agents WILL be liquidated.
     """
     df = df.sort_values("ts_utc").reset_index(drop=True)
     df["date"] = df.ts_utc.dt.date
 
-    # Normal: pick a representative calm day from training set
+    # Normal: Sep 24 (calm day from training set)
     normal_dates = sorted([d for d in df.date.unique() if not (d.month == 10 and 8 <= d.day <= 10)])
-    # Use Sep 24 as the normal replay day (first available)
     normal_day = normal_dates[0] if normal_dates else None
 
-    # Stress: Oct 9 (crash day)
+    # Stress: Oct 9 (moderate stress from training set)
     stress_day = None
     for d in df.date.unique():
         if d.month == 10 and d.day == 9:
             stress_day = d
             break
 
-    replay = {}
-    for regime, day in [("normal", normal_day), ("stress", stress_day)]:
+    # Extreme: Oct 10, 12:00-22:00 UTC window (largest drawdown window)
+    # This is from the held-out set — used specifically for cascade testing
+    extreme_day = None
+    for d in df.date.unique():
+        if d.month == 10 and d.day == 10:
+            extreme_day = d
+            break
+
+    def _extract_window(day, start_hour=None, n_steps=600):
+        """Extract n_steps minutes from a given day, optionally starting at start_hour."""
         if day is None:
-            print(f"  [warn] no replay day for {regime}")
-            continue
-
+            return None
         sub = df[df.date == day].sort_values("ts_utc")
-        if len(sub) < 600:
-            print(f"  [warn] only {len(sub)} minutes for {regime} replay day {day}")
-            # Use what we have, pad with last value
-            prices = list(sub["close"].values)
-            while len(prices) < 600:
+        if start_hour is not None:
+            sub = sub[sub.ts_utc.dt.hour >= start_hour]
+        prices = list(sub["close"].values)
+        if len(prices) < n_steps:
+            print(f"  [warn] only {len(prices)} minutes for day {day}, padding")
+            while len(prices) < n_steps:
                 prices.append(prices[-1])
-            prices = prices[:600]
-        else:
-            prices = list(sub["close"].values[:600])
+        return prices[:n_steps]
 
-        replay[regime] = {
+    def _make_replay_entry(day, prices):
+        return {
             "date": str(day),
             "n_steps": len(prices),
             "start_price": float(prices[0]),
@@ -451,9 +464,36 @@ def extract_replay_paths(df):
             )),
             "prices": [float(p) for p in prices],
         }
-        print(f"  Replay {regime}: day={day}, {len(prices)} steps, "
-              f"start=${prices[0]:.0f}, end=${prices[-1]:.0f}, "
-              f"min 1-min ret={replay[regime]['min_1min_return']:.4f}")
+
+    replay = {}
+
+    # Normal path
+    if normal_day:
+        prices = _extract_window(normal_day, start_hour=None, n_steps=600)
+        if prices:
+            replay["normal"] = _make_replay_entry(normal_day, prices)
+            print(f"  Replay normal: day={normal_day}, 600 steps, "
+                  f"start=${prices[0]:.0f}, end=${prices[-1]:.0f}, "
+                  f"DD={replay['normal']['max_drawdown']*100:.2f}%")
+
+    # Stress path (moderate — Oct 9 first 600 min)
+    if stress_day:
+        prices = _extract_window(stress_day, start_hour=None, n_steps=600)
+        if prices:
+            replay["stress"] = _make_replay_entry(stress_day, prices)
+            print(f"  Replay stress: day={stress_day}, 600 steps, "
+                  f"start=${prices[0]:.0f}, end=${prices[-1]:.0f}, "
+                  f"DD={replay['stress']['max_drawdown']*100:.2f}%")
+
+    # Extreme stress path (Oct 10, 12:00 UTC start — the main crash window)
+    if extreme_day:
+        prices = _extract_window(extreme_day, start_hour=12, n_steps=600)
+        if prices:
+            replay["extreme"] = _make_replay_entry(extreme_day, prices)
+            print(f"  Replay extreme: day={extreme_day} (12:00 UTC start), 600 steps, "
+                  f"start=${prices[0]:.0f}, end=${prices[-1]:.0f}, "
+                  f"DD={replay['extreme']['max_drawdown']*100:.2f}%, "
+                  f"max 1-min={replay['extreme']['min_1min_return']*100:.2f}%")
 
     return replay
 

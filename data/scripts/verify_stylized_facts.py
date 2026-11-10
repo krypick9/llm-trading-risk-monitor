@@ -1,6 +1,15 @@
 """
 Verify that the calibrated simulator produces realistic stylized facts.
 
+v3 (post-feedback fixes):
+  Feedback #3 Gap 1&2: Quantitative calibration criteria replace qualitative
+    "PASS". Each metric now has an explicit threshold:
+    - sigma_hourly: sim within ±30% of real target
+    - kurtosis: direction matches (both > 0 or both < 0)
+    - vol_acf1: within ±0.15 of real target
+    - ofi_acf1: direction matches (both > 0)
+  Also reports a "calibration score" = fraction of criteria met.
+
 v2 (post-TA fixes):
   Q4 fix: Zero returns are RETAINED. We report both variants (with and
           without zeros) so the reader can see the bias the old code
@@ -8,7 +17,7 @@ v2 (post-TA fixes):
   Q6 fix: Multi-seed validation (5 seeds instead of 1). We report the
           mean and std of each metric across seeds.
   Q6 fix: Held-out comparison. We compute the same stylized facts from
-          the held-out 6-day period and compare sim vs real.
+          the held-out 8-day period and compare sim vs real.
 
 Stylized facts checked:
   1. Fat-tailed returns: excess kurtosis > 0
@@ -178,14 +187,70 @@ def compute_stats(exchange, cfg):
     }
 
 
-def load_held_out_targets():
-    """Load held-out validation statistics from calibration targets."""
+def load_calibration_targets():
+    """Load calibration targets for quantitative comparison."""
     path = os.path.join(PROCESSED_DIR, "calibration_targets.json")
     if not os.path.exists(path):
         return None
     with open(path) as f:
-        targets = json.load(f)
-    return targets.get("held_out")
+        return json.load(f)
+
+
+# ---- Quantitative calibration criteria (Feedback #3 Gap 1&2) ----------------
+# Each criterion returns (passed: bool, detail: str)
+SIGMA_BAND = 0.30       # sim sigma must be within ±30% of real
+VOL_ACF1_BAND = 0.15    # sim vol_acf1 must be within ±0.15 of real
+KURT_DIR_MATCH = True   # sim and real kurtosis must have same sign
+
+
+def check_calibration(sim_metrics, real_targets, regime):
+    """Check quantitative calibration criteria.
+
+    Returns dict of criterion -> (passed, detail).
+    """
+    results = {}
+    if real_targets is None or regime not in real_targets:
+        return results
+
+    rt = real_targets[regime]
+
+    # 1. sigma_hourly within ±30%
+    sim_sigma = sim_metrics["sigma_hourly"]["mean"]
+    real_sigma = rt.get("sigma_hourly", 0)
+    if real_sigma > 0:
+        ratio = sim_sigma / real_sigma
+        passed = 0.7 <= ratio <= 1.3
+        results["sigma_hourly"] = (passed,
+            f"sim={sim_sigma:.6f} real={real_sigma:.6f} ratio={ratio:.2f} (band: 0.7-1.3)")
+    else:
+        results["sigma_hourly"] = (False, "real sigma unavailable")
+
+    # 2. kurtosis direction match
+    sim_kurt = sim_metrics["kurtosis_with_zeros"]["mean"]
+    real_kurt = rt.get("kurtosis_with_zeros", 0)
+    if KURT_DIR_MATCH:
+        passed = (sim_kurt > 0 and real_kurt > 0) or (sim_kurt < 0 and real_kurt < 0)
+        results["kurtosis"] = (passed,
+            f"sim={sim_kurt:.2f} real={real_kurt:.2f} (direction {'match' if passed else 'MISMATCH'})")
+    else:
+        results["kurtosis"] = (True, "direction check disabled")
+
+    # 3. vol_acf1 within ±0.15
+    sim_acf1 = sim_metrics["vol_acf1_with_zeros"]["mean"]
+    real_acf1 = rt.get("vol_clustering_acf1_with_zeros", 0)
+    diff = abs(sim_acf1 - real_acf1)
+    passed = diff <= VOL_ACF1_BAND
+    results["vol_acf1"] = (passed,
+        f"sim={sim_acf1:.4f} real={real_acf1:.4f} diff={diff:.4f} (band: ±{VOL_ACF1_BAND})")
+
+    # 4. ofi_acf1 direction match (both > 0)
+    sim_ofi = sim_metrics["ofi_acf1"]["mean"]
+    real_ofi = rt.get("order_flow_acf1", 0)
+    passed = sim_ofi > 0 and real_ofi > 0
+    results["ofi_acf1"] = (passed,
+        f"sim={sim_ofi:.4f} real={real_ofi:.4f} (both > 0: {'YES' if passed else 'NO'})")
+
+    return results
 
 
 def main():
@@ -208,7 +273,8 @@ def main():
         test_scenarios = ["normal-thick-early", "stress-thin-early"]
 
     # Load held-out targets for comparison
-    held_out = load_held_out_targets()
+    cal_targets = load_calibration_targets()
+    held_out = cal_targets.get("held_out") if cal_targets else None
     if held_out:
         print(f"\n  Held-out validation data: {held_out.get('n_days', '?')} days")
         print(f"    sigma_hourly:       {held_out.get('sigma_hourly', 0):.6f}")
@@ -301,7 +367,25 @@ def main():
                 ratio = sim_val / real_val if real_val != 0 else float('inf')
                 print(f"    {label:<25} sim={sim_val:.4f}  real={real_val:.4f}  ratio={ratio:.2f}")
 
-        print(f"\n  Overall: {'PASS' if overall_pass else 'FAIL'}")
+        print(f"\n  Overall (qualitative): {'PASS' if overall_pass else 'FAIL'}")
+
+        # Quantitative calibration criteria (Feedback #3 Gap 1&2)
+        regime = "normal" if "normal" in scen else "stress"
+        cal_checks = check_calibration(metrics, cal_targets, regime)
+        if cal_checks:
+            print(f"\n  Quantitative Calibration Criteria (regime={regime}):")
+            n_pass = 0
+            for criterion, (passed, detail) in cal_checks.items():
+                status = "PASS" if passed else "FAIL"
+                print(f"    [{status}] {criterion:<15} {detail}")
+                if passed:
+                    n_pass += 1
+            cal_score = n_pass / len(cal_checks)
+            print(f"    Calibration score: {n_pass}/{len(cal_checks)} = {cal_score:.0%}")
+            print(f"    {'CALIBRATION ACCEPTED' if cal_score >= 0.75 else 'CALIBRATION NEEDS TUNING'}"
+                  f" (threshold: >= 75%)")
+        else:
+            cal_score = None
 
         all_results.append({
             "scenario": scen,
@@ -315,6 +399,13 @@ def main():
                 "order_flow": ofi_pass,
                 "overall": overall_pass,
             },
+            "quantitative_calibration": {
+                regime: {k: {"passed": v[0], "detail": v[1]} for k, v in cal_checks.items()}
+                for regime, cal_checks in [("normal" if "normal" in scen else "stress",
+                                           check_calibration(metrics, cal_targets,
+                                                            "normal" if "normal" in scen else "stress"))]
+            } if cal_targets else {},
+            "calibration_score": cal_score,
             "seed_results": seed_results,
         })
 
