@@ -30,7 +30,7 @@ class SimConfig:
 
     # ---- the market --------------------------------------------------------
     initial_price: float = 100_000.0  # roughly BTC-sized price
-    tick_size: float = 0.5            # smallest price move (binary-exact on purpose)
+    tick_size: float = 0.1            # smallest price move (binary-exact on purpose)
     lot_size: float = 0.001           # smallest order size, in BTC
 
     # ---- accounts and leverage --------------------------------------------
@@ -61,7 +61,7 @@ class SimConfig:
     bg_level_gap: float = 0.003       # spacing between its levels (0.30%)
 
     # ---- measurement -------------------------------------------------------
-    depth_band: float = 0.005         # "depth" = size within 0.5% of the mid price
+    depth_band: float = 0.001         # "depth" = size within 0.5% of the mid price
     near_liq_buffer: float = 0.05     # an account is "near liquidation" below 5% buffer
 
     # ---- liquidation engine ------------------------------------------------

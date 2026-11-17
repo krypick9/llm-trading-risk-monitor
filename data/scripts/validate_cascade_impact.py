@@ -45,32 +45,9 @@ PROCESSED_DIR = os.path.normpath(os.path.join(REPO_ROOT, "data", "processed"))
 sys.path.insert(0, PERP_SIM_DIR)
 
 from engine import SimConfig, Exchange, SCENARIOS
-from bots import CrowdBot, TrendBot, ContrarianBot, ValueBot, MakerBot
+from baseline_crowd import make_crowd, open_accounts
 
-CROWD_LEVERAGE = [6, 10, 14, 18]
 DEFAULT_SEEDS = [42, 123, 456, 789, 2025]
-
-
-def build_population(seed, n_total=50):
-    """Same population as verify_stylized_facts.py for consistency."""
-    bots = []
-    n_crowd = int(n_total * 0.4)
-    for i in range(n_crowd):
-        bots.append(CrowdBot(f"crowd{i}", seed, CROWD_LEVERAGE[i % 4], act_prob=0.7))
-    n_trend = int(n_total * 0.2)
-    for i in range(n_trend):
-        bots.append(TrendBot(f"trend{i}", seed, leverage=4 + i % 3, act_prob=0.5))
-    n_contra = int(n_total * 0.15)
-    for i in range(n_contra):
-        bots.append(ContrarianBot(f"contrarian{i}", seed, act_prob=0.5))
-    n_value = int(n_total * 0.15)
-    for i in range(n_value):
-        bots.append(ValueBot(f"value{i}", seed, act_prob=0.5))
-    n_maker = n_total - len(bots)
-    for i in range(max(1, n_maker)):
-        bots.append(MakerBot(f"maker{i}", seed))
-    return bots
-
 
 # ---- Metric 1: Kyle's Lambda -----------------------------------------------
 
@@ -247,9 +224,9 @@ def run_one(scenario_name, seed, n_steps, n_bots):
     )
 
     exchange = Exchange(cfg, scenario)
-    bots = build_population(seed, n_total=n_bots)
-    for bot in bots:
-        exchange.add_account(bot.account_id)
+    population = make_crowd(seed, n_total=n_bots)
+    open_accounts(exchange, population)
+    bots = population.bots
 
     for _ in range(n_steps):
         actions = []

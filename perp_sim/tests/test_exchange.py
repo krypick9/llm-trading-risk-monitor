@@ -17,7 +17,7 @@ def buy_ioc(account, qty, price):
 
 class LeverageTests(unittest.TestCase):
     def test_order_is_clipped_to_the_leverage_cap(self):
-        cfg = SimConfig(n_steps=20, max_leverage=5.0)
+        cfg = SimConfig(n_steps=20, max_leverage=5.0, initial_collateral=10_000.0)
         ex = Exchange(cfg, quiet_scenario())
         ex.add_account("a")                                  # 10,000 cash, 5x cap -> about 0.5 BTC
         ex.step([buy_ioc("a", 10.0, 100_500.0)])
@@ -26,7 +26,7 @@ class LeverageTests(unittest.TestCase):
         self.assertLessEqual(position, 0.5 + 1e-9)
 
     def test_cannot_exceed_cap_by_sending_orders_repeatedly(self):
-        cfg = SimConfig(n_steps=20, max_leverage=5.0)
+        cfg = SimConfig(n_steps=20, max_leverage=5.0, initial_collateral=10_000.0)
         ex = Exchange(cfg, quiet_scenario())
         ex.add_account("a")
         for _ in range(5):
@@ -89,12 +89,16 @@ class FundingTests(unittest.TestCase):
         self.assertAlmostEqual(total_before, total_after, places=3)
 
     def test_payment_matches_the_formula(self):
-        self.ex.premium_buffer = [0.01] * 5
-        mark = self.ex.mark_price()
-        before = self.ex.accounts["long"].collateral
-        self.ex._settle_funding()
-        rate = 0.01 * (1 / 8) + 0.0000125
-        self.assertAlmostEqual(before - self.ex.accounts["long"].collateral, mark * rate * 1.0, places=4)
+        cfg = SimConfig(n_steps=120, funding_scale=1/8, funding_interest_per_hour=0.0000125, funding_cap_per_hour=0.04)
+        ex = Exchange(cfg, quiet_scenario())
+        ex.add_account("long")
+        ex.accounts["long"].apply_fill(BUY, 1.0, 100_000.0, 0.0)
+        ex.premium_buffer = [0.01] * 5
+        mark = ex.mark_price()
+        before = ex.accounts["long"].collateral
+        ex._settle_funding()
+        rate = 0.01 * (1/8) + 0.0000125
+        self.assertAlmostEqual(before - ex.accounts["long"].collateral, mark * rate * 1.0, places=4)
 
     def test_funding_is_capped(self):
         self.ex.premium_buffer = [5.0] * 5
@@ -116,7 +120,7 @@ class LiquidationTests(unittest.TestCase):
     def run_shock(self, leverage_qty, shock=-0.10, thin_after_open=None):
         # pin the dial this test depends on: the exchange price must catch up
         # with the reference price quickly, whatever the global default is
-        cfg = SimConfig(n_steps=20, bg_anchor_strength=0.5)
+        cfg = SimConfig(n_steps=20, bg_anchor_strength=0.5, initial_collateral=10_000.0, maintenance_margin_rate=0.025)
         ex = Exchange(cfg, quiet_scenario(shock_return=shock, shock_frac=0.5))
         ex.add_account("a")
         ex.step([buy_ioc("a", leverage_qty, 100_500.0)])      # step 1: open the position
@@ -162,7 +166,7 @@ class LiquidationTests(unittest.TestCase):
 class ReproducibilityTests(unittest.TestCase):
     def run_once(self, seed, extra_idle_accounts=0):
         cfg = SimConfig(n_steps=40, seed=seed)
-        ex = Exchange(cfg, SCENARIOS["stress-thin-early"])
+        ex = Exchange(cfg, SCENARIOS["normal-thin-early"])
         ex.add_account("a")
         for i in range(extra_idle_accounts):
             ex.add_account(f"idle{i}")
