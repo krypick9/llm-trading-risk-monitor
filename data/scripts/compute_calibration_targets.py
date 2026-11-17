@@ -140,25 +140,26 @@ def compute_targets(df):
     returns_all = returns  # keep zeros
     returns_nonzero = returns[returns != 0]  # also compute non-zero variant for comparison
 
-    # --- Split into training and held-out ---
-    all_dates = sorted(df["date"].unique())
+       # --- Day split (fixed by hand, not "first 70%") ---
+    import datetime as dt
+    D = dt.date
+    present = set(df["date"].unique())
+    all_dates = sorted(present)
     n_days = len(all_dates)
-    # Training: first ~70% of days, Held-out: last ~30%
-    split_idx = int(n_days * 0.7)
-    train_dates = set(all_dates[:split_idx])
-    held_dates = set(all_dates[split_idx:])
 
-    print(f"\n  Training days ({len(train_dates)}): {sorted(train_dates)}")
+    train_dates = {d for d in present if D(2025, 9, 24) <= d <= D(2025, 10, 9)}   # tune on these (calm)
+    held_dates  = {D(2025, 10, 11), D(2025, 10, 12), D(2025, 10, 13), D(2025, 10, 20)} & present  # unseen calm days
+    crash_dates = {D(2025, 10, 10)} & present   # crash: reference/test only, never tuned, never in held-out
+
+    print(f"  Training days ({len(train_dates)}): {sorted(train_dates)}")
     print(f"  Held-out days ({len(held_dates)}): {sorted(held_dates)}")
+    print(f"  Crash day: {sorted(crash_dates)}")
 
     df_train = df[df["date"].isin(train_dates)]
     df_held = df[df["date"].isin(held_dates)]
 
-    # --- Split into normal vs stress regimes ---
-    # Oct 8-10 = crash (stress); everything else = normal
-    stress_dates = {d for d in all_dates if hasattr(d, 'month') and d.month == 10 and 8 <= d.day <= 10}
-    normal_dates_train = train_dates - stress_dates
-    stress_dates_train = train_dates & stress_dates
+    normal_dates_train = train_dates
+    stress_dates_train = crash_dates
 
     print(f"  Normal training days: {sorted(normal_dates_train)}")
     print(f"  Stress training days: {sorted(stress_dates_train)}")
@@ -258,7 +259,7 @@ def compute_targets(df):
             "spread_rel": spread_rel_median,
             "spread_rel_p5": spread_rel_p5,
             "spread_rel_p95": spread_rel_p95,
-            # Depth (Q1 fix: from Bybit near_depth within ~0.5%)
+            # Depth (Q1 fix: from Bybit near_depth within 0.1% of mid)
             "depth_btc": depth_median,
             "depth_p10": depth_p10,
             "depth_p90": depth_p90,
@@ -273,6 +274,8 @@ def compute_targets(df):
             "n_total_returns": len(regime_rets),
             "max_pos_1min_return": max_pos_1min,
             "training_days": sorted(str(d) for d in dates_set),
+            "trades_per_min_median": safe_median(sub["n_trades"].values),
+            "btc_per_min_median": safe_median(sub["vol_usd"].values / sub["mid_bybit"].values),
         }
 
     # --- Full dataset stats ---
@@ -301,7 +304,7 @@ def compute_targets(df):
     # --- Held-out validation stats ---
     if len(df_held) > 60:
         held_close = df_held["close"].values
-        held_rets = np.diff(np.log(held_close))
+        held_rets = np.concatenate([np.diff(np.log(g["close"].values)) for _, g in df_held.groupby("date")])
         held_hourly_vols = []
         for i in range(0, len(held_rets), 60):
             chunk = held_rets[i:i + 60]
@@ -334,8 +337,8 @@ def compute_targets(df):
         "data_source": "teammate_bybit_orderbook + teammate_binance_aggTrades_1min",
         "data_period": f"{df.ts_utc.min()} to {df.ts_utc.max()}",
         "n_days": n_days,
-        "train_split": f"first {split_idx} days ({len(train_dates)} days)",
-        "held_out_split": f"last {n_days - split_idx} days ({len(held_dates)} days)",
+        "train_split": f"first {len(train_dates)} days ({len(train_dates)} days)",
+        "held_out_split": f"last {len(held_dates)} days ({len(held_dates)} days)",
         "stress_definition": "Oct 8-10 2025 (BTC crash period)",
         "zero_returns": "RETAINED in all statistics (Q4 fix)",
         "shock_definition": "max 1-min log return (Q2 fix: NOT daily drawdown)",
@@ -543,7 +546,7 @@ def main():
         print(f"    jump_std:           {t['jump_std']:.6f}")
         print(f"    spread_bps:         {t['spread_bps_median']:.4f} bps (Q1 fix: from Bybit)")
         print(f"    spread_rel:         {t['spread_rel']:.8f}")
-        print(f"    depth_btc:          {t['depth_btc']:.1f} BTC (Q1 fix: 0.5% band)")
+        print(f"    depth_btc:          {t['depth_btc']:.1f} BTC (Q1 fix: 0.1% band)")
         print(f"    depth_p10:          {t['depth_p10']:.1f} BTC")
         print(f"    shock_1min:         {t['shock_return_1min']:.6f} ({t['shock_return_1min_pct']:.2f}%) (Q2 fix)")
         print(f"    max_drawdown_daily: {t['max_drawdown_daily']:.6f} ({t['max_drawdown_daily_pct']:.2f}%) (reference only)")

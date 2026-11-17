@@ -87,7 +87,7 @@ def autocorrelation(x, lag=1):
 
 # Mini-market depth grid (in BTC, per side)
 # Real Bybit near_depth ~109 BTC; mini-market scaled for 50 agents
-MINI_MARKET_DEPTH_GRID = [0.5, 1.0, 2.0, 4.0, 8.0]
+MINI_MARKET_DEPTH_GRID = [1.0, 1.5, 2.0, 4.0, 8.0, 16.0]
 
 # Seeds for multi-seed calibration (Q6 fix)
 CALIB_SEEDS = [42, 123, 456]
@@ -196,17 +196,21 @@ def compute_sim_stats(exchange, cfg):
 def calibrate_regime(targets, regime, quick=False):
     """Calibrate parameters for one regime using multi-seed runs."""
     target = targets[regime]
+    target = dict(target)
+    target["shock_return"] = target["shock_return_1min"]
     print(f"\n--- Calibrating {regime} regime ---")
     print(f"  Real-data targets (v2, Bybit source):")
     print(f"    sigma_hourly:    {target['sigma_hourly']:.6f}")
     print(f"    jump_rate/hour:  {target['jump_rate_per_hour']:.3f}")
     print(f"    spread_bps:      {target.get('spread_bps_median', 0):.4f}")
     print(f"    spread_rel:      {target['spread_rel']:.8f}")
-    print(f"    depth_btc:       {target['depth_btc']:.1f} BTC (Bybit 0.5% band)")
+    print(f"    depth_btc:       {target['depth_btc']:.1f} BTC (Bybit 0.1% band)")
     print(f"    shock_1min:      {target.get('shock_return_1min', target.get('shock_return', 0)):.6f}")
 
     # --- Sigma grid ---
-    sigma_grid = [target["sigma_hourly"] * f for f in [0.8, 0.9, 1.0, 1.1, 1.2]]
+    sigma_grid = [target["sigma_hourly"] * f for f in [0.5, 0.75, 1.0, 1.25, 1.5]]
+    if regime == "stress":
+        sigma_grid = [target["sigma_hourly"]]   # no effect under replay
 
     # --- Depth grid (mini-market) ---
     depth_grid = MINI_MARKET_DEPTH_GRID
@@ -250,7 +254,7 @@ def calibrate_regime(targets, regime, quick=False):
             bg_half_spread=spread,
             bg_walkaway=walkaway,
             use_replay=use_replay,
-            replay_regime=regime,
+            replay_regime=("extreme" if regime == "stress" else regime),
         )
 
         # Multi-seed: average stats across seeds
@@ -306,7 +310,7 @@ def calibrate_regime(targets, regime, quick=False):
                 "bg_half_spread": spread,
                 "bg_walkaway": walkaway,
                 "use_replay": use_replay,
-                "replay_regime": regime,
+                "replay_regime": ("extreme" if regime == "stress" else regime),
             }
             best_stats = avg_stats
 
@@ -384,7 +388,7 @@ def main():
             "calibration_date": time.strftime("%Y-%m-%d"),
             "fixes": [
                 "Q1: spread from Bybit spread_bps_mean (not Binance bookDepth artifact)",
-                "Q1: depth from Bybit near_depth_usd within 0.5% (not full-book sum)",
+                "Q1: depth from Bybit near_depth_usd within 0.1% (not full-book sum)",
                 "Q2: stress regime uses ReplayIndexPrice (historical path replay)",
                 "Q4: zero returns retained in all statistics",
                 "Q6: multi-seed calibration (3 seeds)",

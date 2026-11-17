@@ -35,24 +35,24 @@ from .config import Scenario
 # Sources: teammate's 22-day Bybit + Binance data (data/processed/calibration_targets.json)
 _REGIMES = {
     "normal": dict(
-        sigma_hourly=0.002334,          # calibrated best-fit (grid: 0.8-1.2x real target)
-        jump_rate_per_hour=0.845,       # from real data (directly, not emergent)
-        jump_mean=-0.001712,
-        jump_std=0.000672,
+        sigma_hourly=0.001363,          # calibrated best-fit (grid: 0.8-1.2x real target)
+        jump_rate_per_hour=0.864,       # from real data (directly, not emergent)
+        jump_mean=-0.001717,
+        jump_std=0.000639,
         shock_return=-0.005346,         # Q2 fix: max 1-min return on normal days
         bg_walkaway=False,
-        bg_half_spread=3.5e-06,         # Q1 fix: calibrated from real Bybit spread
+        bg_half_spread=4.30e-07,         # Q1 fix: calibrated from real Bybit spread
         use_replay=False,               # normal: synthetic GBM is fine
         replay_regime="normal",
     ),
     "stress": dict(
-        sigma_hourly=0.002567,          # calibrated best-fit
+        sigma_hourly=0.003072,          # calibrated best-fit
         jump_rate_per_hour=0.750,
         jump_mean=-0.001892,
         jump_std=0.000507,
         shock_return=-0.003086,         # Q2 fix: max 1-min return on stress days
         bg_walkaway=True,
-        bg_half_spread=3.3e-06,         # Q1 fix: calibrated from real Bybit spread
+        bg_half_spread=4.13e-07,         # Q1 fix: calibrated from real Bybit spread
         use_replay=True,                # Q2 fix: replay real crash path
         # v3 fix (Feedback #1): use "extreme" path (Oct 10 12:00 UTC)
         # This path has DD=-15.47% and max 1-min=-5.13%, which WILL trigger
@@ -65,7 +65,7 @@ _REGIMES = {
 # Mini-market depth (calibrated best-fit from grid search)
 # thick = 8.0 BTC (normal best-fit, moderate price impact)
 # thin  = 4.0 BTC (stress best-fit, larger price impact, cascades possible)
-_DEPTH_BTC = {"thick": 8.0, "thin": 4.0}
+_DEPTH_BTC = {"thick": 4.0, "thin": 1.5}
 _TIMING = {"early": 0.35, "late": 0.65}
 
 
