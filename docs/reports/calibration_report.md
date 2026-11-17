@@ -8,7 +8,7 @@
 
 > **Held-out tuning leakage correction (2026-11-18):** The previous validation script scaled volatility, depth and spread using statistics from the held-out dates, then scored the same dates. That is exploratory tuning, not independent validation. The replacement validator freezes training-calibrated dials and does not use held-out target values to change the environment.
 
-> **Frozen-dial diagnostic:** On the already-inspected post-crash held-out dates, after one-seed quick smoke calibration, local traded-price volatility is about 0.74x target; zero-return minutes are about 60% vs 0.56% in the real sample; clustering is slightly outside tolerance and tails are about 2.5x target. These are diagnostics, not final multi-seed results or a fresh untouched validation. The LP anchor increase improves transmission only partially: it moves quote centres, but cannot cause orders or fills by itself.
+> **Frozen-dial diagnostic:** On the already-inspected post-crash held-out dates, after one-seed quick smoke calibration, local traded-price volatility is about 0.74x target; zero-return minutes are about 60% vs 0.56% in the real sample; clustering is slightly outside tolerance and tails are about 2.5x target. These are diagnostics, not final multi-seed results or a fresh untouched validation. The LP anchor increase improves transmission only partially: it moves quote centres, but cannot cause orders or fills by itself. The quote-level spacing remains at its 0.30% baseline pending stronger evidence.
 
 **Project:** Risk Monitoring for LLM Trading Agents (FYP Group 30)
 **Date:** November 2025
