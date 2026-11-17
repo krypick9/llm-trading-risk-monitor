@@ -112,10 +112,11 @@ class Exchange:
         self.cfg = cfg
         self.scenario = scenario
         # Separate random streams: the reference price path must be identical
-        # for a given (scenario, seed) no matter how many traders are present.
-        # Q2 fix: use historical replay if the scenario requests it,
+        # for a given regime and seed regardless of the synthetic path label or
+        # number of traders. Event/no-event scenarios share the same base path.
+        # Use historical replay if the scenario requests it,
         # otherwise use synthetic GBM. Either way the path is deterministic
-        # for a given (scenario, seed) — it never depends on who trades.
+        # for a given regime/seed and never depends on who trades.
         if getattr(scenario, "use_replay", False):
             self.index = ReplayIndexPrice(cfg, scenario, random.Random(f"{cfg.seed}|index"))
         else:
@@ -123,9 +124,11 @@ class Exchange:
         self.rng_arrival = random.Random(f"{cfg.seed}|arrival")
         self.book = OrderBook(cfg.tick_size)
         self.accounts = {}
+        self.initial_trader_collateral = 0.0
         self.step_count = 0
         self.index_price = cfg.initial_price
         self.last_price = cfg.initial_price
+        self.index_history = [cfg.initial_price]
         self.price_history = [cfg.initial_price]
         self.premium_buffer = []
         self.last_funding_rate = 0.0
@@ -143,13 +146,27 @@ class Exchange:
     # ---- setup -------------------------------------------------------------
     def add_account(self, account_id, collateral=None, max_leverage=None,
                     liquidatable=True, background=False) -> Account:
+        if account_id in self.accounts:
+            raise ValueError(f"Account {account_id!r} already exists")
+        starting_collateral = self.cfg.initial_collateral if collateral is None else collateral
+        if not background:
+            budget = self.cfg.total_trader_collateral_budget
+            if starting_collateral < 0:
+                raise ValueError("Trader collateral cannot be negative")
+            if budget is not None and self.initial_trader_collateral + starting_collateral > budget + 1e-9:
+                raise ValueError(
+                    f"Adding {starting_collateral:.2f} collateral would exceed the "
+                    f"market trader-collateral budget of {budget:.2f}"
+                )
         account = Account(
             account_id,
-            self.cfg.initial_collateral if collateral is None else collateral,
+            starting_collateral,
             self.cfg.max_leverage if max_leverage is None else max_leverage,
             liquidatable=liquidatable, background=background,
         )
         self.accounts[account_id] = account
+        if not background:
+            self.initial_trader_collateral += starting_collateral
         return account
 
     def _next_oid(self) -> int:
@@ -226,18 +243,21 @@ class Exchange:
         stats = _Stats()
 
         self.index_price = self.index.next(t)
+        self.index_history.append(self.index_price)
         self.book.expire(t)
         bg_factor = self._requote_background(t, stats)
 
-        # Circuit breaker check (Phase 2): activate if price deviates too far from index
+        # Circuit breaker check (Phase 2): expire before testing a fresh breach.
+        # Cooldown expiry must be checked before the activation condition; otherwise
+        # the breaker can remain active forever if the price stays outside the band.
         if cfg.circuit_breaker_enabled:
-            if t >= self.circuit_breaker_until:  # not in cooldown
+            if self.circuit_breaker_active and t >= self.circuit_breaker_until:
+                self.circuit_breaker_active = False
+            if not self.circuit_breaker_active:
                 deviation = abs(self.last_price - self.index_price) / self.index_price
                 if deviation > cfg.circuit_breaker_pct:
                     self.circuit_breaker_active = True
                     self.circuit_breaker_until = t + cfg.circuit_breaker_cooldown_steps
-            elif t >= self.circuit_breaker_until:
-                self.circuit_breaker_active = False
 
         for action in actions:
             if isinstance(action, CancelAll):
@@ -337,13 +357,16 @@ class Exchange:
         """The exchange's own liquidity provider. It posts buy and sell orders
         around a centre that sits between the last trade price and the outside
         reference price (bg_anchor_strength decides how close to the reference).
-        In stress scenarios it pulls most of its size and widens when prices
-        have moved more than 1% in 5 steps: makers walking away."""
+        In stress scenarios it retreats when either local or external prices
+        move beyond the lookback threshold. This is a rule-based proxy for
+        makers reacting to observable volatility, not a solvency model."""
         cfg, s = self.cfg, self.scenario
         self.book.cancel_account(BG_ID)
         factor, widen, look = 1.0, 1.0, 5
-        if s.bg_walkaway and len(self.price_history) > look:
-            if abs(self.price_history[-1] / self.price_history[-1 - look] - 1.0) > 0.01:
+        if s.bg_walkaway and len(self.price_history) > look and len(self.index_history) > look:
+            local_move = abs(self.price_history[-1] / self.price_history[-1 - look] - 1.0)
+            external_move = abs(self.index_history[-1] / self.index_history[-1 - look] - 1.0)
+            if max(local_move, external_move) > cfg.bg_walkaway_threshold:
                 factor, widen = 0.3, 2.0
         centre = self.last_price + cfg.bg_anchor_strength * (self.index_price - self.last_price)
         half = s.bg_half_spread * widen

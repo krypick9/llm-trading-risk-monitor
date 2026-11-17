@@ -1,46 +1,43 @@
 [
   {
-    "scenario": "normal-thick-early",
-    "n_seeds": 5,
+    "scenario": "stress-thin-synthetic-no-event",
+    "n_seeds": 2,
     "seeds": [
       42,
-      123,
-      456,
-      789,
-      2025
+      123
     ],
-    "n_steps": 600,
+    "n_steps": 180,
     "metrics": {
       "kyle_lambda": {
-        "mean": 0.00032478435713516936,
-        "std": 6.33732547314415e-05,
-        "min": 0.0002653850101461345,
-        "max": 0.0004086166496336965
+        "mean": 9.55983489291191e-05,
+        "std": 1.7889447494102704e-05,
+        "min": 7.770890143501639e-05,
+        "max": 0.0001134877964232218
       },
       "kyle_r_squared": {
-        "mean": 0.057716732820247606,
-        "std": 0.03398228548744269,
-        "min": 0.024913898890165154,
-        "max": 0.11281224717927552
+        "mean": -0.016709301714006197,
+        "std": 0.001837631658735961,
+        "min": -0.018546933372742158,
+        "max": -0.014871670055270236
       },
       "kyle_n_obs": {
-        "mean": 599.8,
-        "std": 0.4000000000000001,
-        "min": 599.0,
-        "max": 600.0
+        "mean": 180.0,
+        "std": 0.0,
+        "min": 180.0,
+        "max": 180.0
       },
       "recovery_median_steps": {
-        "mean": 1.8,
-        "std": 0.4,
-        "min": 1.0,
+        "mean": NaN,
+        "std": NaN,
+        "min": NaN,
+        "max": NaN
+      },
+      "recovery_n_shocks": {
+        "mean": 1.0,
+        "std": 1.0,
+        "min": 0.0,
         "max": 2.0
       },
-      "recovery_n_shocks": {
-        "mean": 11.2,
-        "std": 2.7856776554368237,
-        "min": 6.0,
-        "max": 14.0
-      },
       "liq_acf1": {
         "mean": 0.0,
         "std": 0.0,
@@ -97,18 +94,18 @@
       }
     },
     "pass": {
-      "price_impact": true,
-      "liquidity_recovery": true,
-      "cascade_dynamics": true,
-      "overall": true
+      "price_impact_positive_diagnostic": true,
+      "liquidity_recovery_observed": false,
+      "cascade_dynamics_observed": false,
+      "overall": false
     },
     "seed_results": [
       {
-        "kyle_lambda": 0.00028679018014409407,
-        "kyle_r_squared": 0.03600580355482119,
-        "kyle_n_obs": 599,
-        "recovery_median_steps": 2.0,
-        "recovery_n_shocks": 12,
+        "kyle_lambda": 0.0001134877964232218,
+        "kyle_r_squared": -0.018546933372742158,
+        "kyle_n_obs": 180,
+        "recovery_median_steps": NaN,
+        "recovery_n_shocks": 0,
         "liq_acf1": 0.0,
         "cascade_fraction": 0.0,
         "max_cascade_length": 0,
@@ -118,276 +115,26 @@
         "n_cascade_runs": 0,
         "bad_debt_total": 0.0,
         "bad_debt_ratio": 0.0,
-        "scenario": "normal-thick-early",
+        "scenario": "stress-thin-synthetic-no-event",
         "seed": 42
       },
       {
-        "kyle_lambda": 0.0002653850101461345,
-        "kyle_r_squared": 0.024913898890165154,
-        "kyle_n_obs": 600,
-        "recovery_median_steps": 2.0,
-        "recovery_n_shocks": 14,
-        "liq_acf1": 0.0,
-        "cascade_fraction": 0.0,
-        "max_cascade_length": 0,
-        "total_liquidations": 0,
-        "total_liq_notional": 0.0,
-        "total_liq_steps": 0,
-        "n_cascade_runs": 0,
-        "bad_debt_total": 0.0,
-        "bad_debt_ratio": 0.0,
-        "scenario": "normal-thick-early",
-        "seed": 123
-      },
-      {
-        "kyle_lambda": 0.00026836212324431527,
-        "kyle_r_squared": 0.11281224717927552,
-        "kyle_n_obs": 600,
-        "recovery_median_steps": 2.0,
-        "recovery_n_shocks": 6,
-        "liq_acf1": 0.0,
-        "cascade_fraction": 0.0,
-        "max_cascade_length": 0,
-        "total_liquidations": 0,
-        "total_liq_notional": 0.0,
-        "total_liq_steps": 0,
-        "n_cascade_runs": 0,
-        "bad_debt_total": 0.0,
-        "bad_debt_ratio": 0.0,
-        "scenario": "normal-thick-early",
-        "seed": 456
-      },
-      {
-        "kyle_lambda": 0.0004086166496336965,
-        "kyle_r_squared": 0.03302397870789753,
-        "kyle_n_obs": 600,
-        "recovery_median_steps": 2.0,
-        "recovery_n_shocks": 11,
-        "liq_acf1": 0.0,
-        "cascade_fraction": 0.0,
-        "max_cascade_length": 0,
-        "total_liquidations": 0,
-        "total_liq_notional": 0.0,
-        "total_liq_steps": 0,
-        "n_cascade_runs": 0,
-        "bad_debt_total": 0.0,
-        "bad_debt_ratio": 0.0,
-        "scenario": "normal-thick-early",
-        "seed": 789
-      },
-      {
-        "kyle_lambda": 0.0003947678225076063,
-        "kyle_r_squared": 0.08182773576907865,
-        "kyle_n_obs": 600,
-        "recovery_median_steps": 1.0,
-        "recovery_n_shocks": 13,
-        "liq_acf1": 0.0,
-        "cascade_fraction": 0.0,
-        "max_cascade_length": 0,
-        "total_liquidations": 0,
-        "total_liq_notional": 0.0,
-        "total_liq_steps": 0,
-        "n_cascade_runs": 0,
-        "bad_debt_total": 0.0,
-        "bad_debt_ratio": 0.0,
-        "scenario": "normal-thick-early",
-        "seed": 2025
-      }
-    ]
-  },
-  {
-    "scenario": "stress-thin-early",
-    "n_seeds": 5,
-    "seeds": [
-      42,
-      123,
-      456,
-      789,
-      2025
-    ],
-    "n_steps": 600,
-    "metrics": {
-      "kyle_lambda": {
-        "mean": 0.0024308769755047492,
-        "std": 0.0003889066530931128,
-        "min": 0.0019470045374543985,
-        "max": 0.0029258167198718413
-      },
-      "kyle_r_squared": {
-        "mean": 0.09831029350266973,
-        "std": 0.029835136396733013,
-        "min": 0.05353633121268131,
-        "max": 0.14366696887260955
-      },
-      "kyle_n_obs": {
-        "mean": 599.8,
-        "std": 0.4,
-        "min": 599.0,
-        "max": 600.0
-      },
-      "recovery_median_steps": {
-        "mean": 1.9,
-        "std": 0.8,
-        "min": 1.0,
-        "max": 3.0
-      },
-      "recovery_n_shocks": {
-        "mean": 9.6,
-        "std": 3.2,
-        "min": 6.0,
-        "max": 15.0
-      },
-      "liq_acf1": {
-        "mean": 0.4466979278952586,
-        "std": 0.21750590787985682,
-        "min": 0.16057272406141812,
-        "max": 0.7310583197447016
-      },
-      "cascade_fraction": {
-        "mean": 0.8433333333333334,
-        "std": 0.08406346808612326,
-        "min": 0.75,
-        "max": 1.0
-      },
-      "max_cascade_length": {
-        "mean": 3.4,
-        "std": 1.019803902718557,
-        "min": 2.0,
-        "max": 5.0
-      },
-      "total_liquidations": {
-        "mean": 14.4,
-        "std": 6.2801273872430325,
-        "min": 7.0,
-        "max": 26.0
-      },
-      "total_liq_notional": {
-        "mean": 74748.00060000003,
-        "std": 26329.80260533472,
-        "min": 31809.691100000033,
-        "max": 113287.04900000001
-      },
-      "total_liq_steps": {
-        "mean": 4.6,
-        "std": 1.4966629547095764,
-        "min": 2.0,
-        "max": 6.0
-      },
-      "n_cascade_runs": {
-        "mean": 2.0,
-        "std": 0.6324555320336759,
-        "min": 1.0,
-        "max": 3.0
-      },
-      "bad_debt_total": {
-        "mean": 135.35851345198208,
-        "std": 228.82885167423484,
-        "min": 0.0,
-        "max": 592.2878044644436
-      },
-      "bad_debt_ratio": {
-        "mean": 0.0027071702690396413,
-        "std": 0.004576577033484696,
-        "min": 0.0,
-        "max": 0.011845756089288872
-      }
-    },
-    "pass": {
-      "price_impact": true,
-      "liquidity_recovery": true,
-      "cascade_dynamics": true,
-      "overall": true
-    },
-    "seed_results": [
-      {
-        "kyle_lambda": 0.0023374361830203177,
-        "kyle_r_squared": 0.08987827100125056,
-        "kyle_n_obs": 600,
-        "recovery_median_steps": 1.0,
-        "recovery_n_shocks": 15,
-        "liq_acf1": 0.7310583197447016,
-        "cascade_fraction": 0.8333333333333334,
-        "max_cascade_length": 5,
-        "total_liquidations": 13,
-        "total_liq_notional": 68767.40209999999,
-        "total_liq_steps": 6,
-        "n_cascade_runs": 2,
-        "bad_debt_total": 24.257398630072984,
-        "bad_debt_ratio": 0.00048514797260145967,
-        "scenario": "stress-thin-early",
-        "seed": 42
-      },
-      {
-        "kyle_lambda": 0.0019470045374543985,
-        "kyle_r_squared": 0.0902592167819316,
-        "kyle_n_obs": 600,
-        "recovery_median_steps": 3.0,
-        "recovery_n_shocks": 11,
-        "liq_acf1": 0.16057272406141812,
-        "cascade_fraction": 1.0,
-        "max_cascade_length": 2,
-        "total_liquidations": 7,
-        "total_liq_notional": 31809.691100000033,
-        "total_liq_steps": 2,
-        "n_cascade_runs": 1,
-        "bad_debt_total": 40.485039675908965,
-        "bad_debt_ratio": 0.0008097007935181793,
-        "scenario": "stress-thin-early",
-        "seed": 123
-      },
-      {
-        "kyle_lambda": 0.0028360830586858297,
-        "kyle_r_squared": 0.14366696887260955,
-        "kyle_n_obs": 599,
-        "recovery_median_steps": 1.0,
-        "recovery_n_shocks": 9,
-        "liq_acf1": 0.6295347254665195,
-        "cascade_fraction": 0.75,
-        "max_cascade_length": 3,
-        "total_liquidations": 26,
-        "total_liq_notional": 113287.04900000001,
-        "total_liq_steps": 4,
-        "n_cascade_runs": 2,
-        "bad_debt_total": 592.2878044644436,
-        "bad_debt_ratio": 0.011845756089288872,
-        "scenario": "stress-thin-early",
-        "seed": 456
-      },
-      {
-        "kyle_lambda": 0.0029258167198718413,
-        "kyle_r_squared": 0.11421067964487563,
-        "kyle_n_obs": 600,
-        "recovery_median_steps": 2.0,
-        "recovery_n_shocks": 7,
-        "liq_acf1": 0.24663383696445512,
-        "cascade_fraction": 0.8,
-        "max_cascade_length": 4,
-        "total_liquidations": 12,
-        "total_liq_notional": 84821.4512,
-        "total_liq_steps": 5,
-        "n_cascade_runs": 2,
-        "bad_debt_total": 19.762324489484786,
-        "bad_debt_ratio": 0.00039524648978969576,
-        "scenario": "stress-thin-early",
-        "seed": 789
-      },
-      {
-        "kyle_lambda": 0.0021080443784913597,
-        "kyle_r_squared": 0.05353633121268131,
-        "kyle_n_obs": 600,
+        "kyle_lambda": 7.770890143501639e-05,
+        "kyle_r_squared": -0.014871670055270236,
+        "kyle_n_obs": 180,
         "recovery_median_steps": 2.5,
-        "recovery_n_shocks": 6,
-        "liq_acf1": 0.4656900332391985,
-        "cascade_fraction": 0.8333333333333334,
-        "max_cascade_length": 3,
-        "total_liquidations": 14,
-        "total_liq_notional": 75054.40960000006,
-        "total_liq_steps": 6,
-        "n_cascade_runs": 3,
+        "recovery_n_shocks": 2,
+        "liq_acf1": 0.0,
+        "cascade_fraction": 0.0,
+        "max_cascade_length": 0,
+        "total_liquidations": 0,
+        "total_liq_notional": 0.0,
+        "total_liq_steps": 0,
+        "n_cascade_runs": 0,
         "bad_debt_total": 0.0,
         "bad_debt_ratio": 0.0,
-        "scenario": "stress-thin-early",
-        "seed": 2025
+        "scenario": "stress-thin-synthetic-no-event",
+        "seed": 123
       }
     ]
   }

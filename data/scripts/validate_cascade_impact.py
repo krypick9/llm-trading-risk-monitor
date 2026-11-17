@@ -103,46 +103,54 @@ def compute_recovery_time(records):
     Real markets recover liquidity in 5-30 minutes after a shock.
     A mini-market with 50 agents may recover faster or slower.
 
-    Returns (median_recovery_steps, n_shocks_detected).
+    Returns (median_recovery_steps, n_shocks_detected). Missing recovery is NaN,
+    not zero; three consecutive valid spread observations are required.
     """
-    if len(records) < 60:
-        return 0.0, 0
+    if len(records) < 90:
+        return float("nan"), 0
 
     prices = np.array([r.last_price for r in records])
     spreads = np.array([r.spread_rel for r in records])
     returns = np.diff(np.log(prices + 1e-10))
 
-    sigma = np.std(returns[np.isfinite(returns)]) if len(returns) > 10 else 0.001
+    finite_returns = returns[np.isfinite(returns)]
+    sigma = np.std(finite_returns) if len(finite_returns) > 10 else 0.0
     if sigma < 1e-8:
-        return 0.0, 0
+        return float("nan"), 0
 
     threshold = 2 * sigma
-    median_spread = np.median(spreads[spreads > 0]) if np.any(spreads > 0) else 0.0
-
     recovery_times = []
-    i = 0
-    while i < len(returns) - 30:
-        if abs(returns[i]) > threshold and i + 1 < len(spreads):
-            # Shock detected; find when spread returns to <= median
-            pre_shock_spread = spreads[max(0, i - 5):i + 1]
-            target = np.median(pre_shock_spread) if len(pre_shock_spread) > 0 else median_spread
-            for j in range(i + 1, min(i + 60, len(spreads))):
-                if spreads[j] <= target * 1.5:  # within 1.5x of pre-shock
-                    recovery_times.append(j - i)
-                    break
-            i = j + 1 if 'j' in dir() else i + 30
-        else:
+    i = 30
+    while i < len(returns) - 60:
+        if abs(returns[i]) <= threshold:
             i += 1
+            continue
+        pre = spreads[max(0, i - 30):i]
+        valid_pre = pre[np.isfinite(pre) & (pre > 0)]
+        if not len(valid_pre):
+            i += 1
+            continue
+        limit = float(np.median(valid_pre)) * 1.5
+        recovered = None
+        for j in range(i + 1, min(i + 60, len(spreads) - 2)):
+            window = spreads[j:j + 3]
+            if len(window) == 3 and np.all(np.isfinite(window)) and np.all(window > 0) \
+                    and np.all(window <= limit):
+                recovered = j - i
+                break
+        if recovered is not None:
+            recovery_times.append(recovered)
+        i += 60
 
     if not recovery_times:
-        return 0.0, 0
+        return float("nan"), 0
 
     return float(np.median(recovery_times)), len(recovery_times)
 
 
 # ---- Metric 3: Cascade Decay -----------------------------------------------
 
-def compute_cascade_metrics(records):
+def compute_cascade_metrics(records, total_collateral=50_000.0):
     """Measure liquidation cascade dynamics.
 
     - liq_acf1: autocorrelation of liquidation counts at lag 1.
@@ -192,7 +200,6 @@ def compute_cascade_metrics(records):
 
     # Bad debt as fraction of total collateral
     bad_debt = float(records[-1].bad_debt_total) if records else 0.0
-    total_collateral = 50 * 1000.0  # n_bots * initial_collateral
     bad_debt_ratio = bad_debt / total_collateral if total_collateral > 0 else 0.0
 
     return {
@@ -243,7 +250,7 @@ def run_one(scenario_name, seed, n_steps, n_bots):
     recovery, n_shocks = compute_recovery_time(recs)
 
     # Metric 3: Cascade dynamics
-    cascade = compute_cascade_metrics(recs)
+    cascade = compute_cascade_metrics(recs, total_collateral=n_bots * 1000.0)
 
     return {
         "kyle_lambda": lam,
@@ -274,7 +281,7 @@ def main():
         test_scenarios = [args.scenario]
     else:
         # Test both normal and stress extremes
-        test_scenarios = ["normal-thick-early", "stress-thin-early"]
+        test_scenarios = ["normal-thick-synthetic-no-event", "stress-thin-synthetic-no-event"]
 
     all_results = []
 
@@ -315,8 +322,8 @@ def main():
         print(f"     R-squared:    {metrics['kyle_r_squared']['mean']:.4f} "
               f"± {metrics['kyle_r_squared']['std']:.4f}")
         print(f"     n_obs:        {metrics['kyle_n_obs']['mean']:.0f}")
-        lam_pass = metrics["kyle_lambda"]["mean"] > 0
-        print(f"     pass: {'YES' if lam_pass else 'NO'} (lambda > 0)")
+        lam_positive = metrics["kyle_lambda"]["mean"] > 0
+        print(f"     positive: {'YES' if lam_positive else 'NO'} (diagnostic only)")
         print(f"     reference: real perps lambda ~ 1e-6 to 1e-4 (size-dependent)")
 
         print(f"\n  2. Liquidity Recovery Time:")
@@ -324,8 +331,9 @@ def main():
               f"± {metrics['recovery_median_steps']['std']:.1f}")
         print(f"     shocks detected: {metrics['recovery_n_shocks']['mean']:.1f} "
               f"± {metrics['recovery_n_shocks']['std']:.1f}")
-        rec_pass = 0 < metrics["recovery_median_steps"]["mean"] <= 60
-        print(f"     pass: {'YES' if rec_pass else 'CHECK'} (0 < recovery <= 60 steps)")
+        recovery_mean = metrics["recovery_median_steps"]["mean"]
+        rec_observed = math.isfinite(recovery_mean) and recovery_mean > 0
+        print(f"     recovery observed: {'YES' if rec_observed else 'NO'} (diagnostic only)")
         print(f"     reference: real markets recover in 5-30 min")
 
         print(f"\n  3. Cascade Dynamics:")
@@ -345,12 +353,12 @@ def main():
               f"± {metrics['bad_debt_ratio']['std']:.6f}")
 
         # Cascade pass: ACF1 > 0 means liquidations cluster (realistic cascade)
-        cascade_pass = metrics["liq_acf1"]["mean"] > 0 or metrics["total_liquidations"]["mean"] == 0
-        print(f"     pass: {'YES' if cascade_pass else 'NO'} "
-              f"(ACF1 > 0 or no liquidations)")
+        cascade_observed = (metrics["total_liquidations"]["mean"] > 0 and
+                            metrics["liq_acf1"]["mean"] > 0)
+        print(f"     cascade observed: {'YES' if cascade_observed else 'NO'}")
 
-        overall_pass = lam_pass and (rec_pass or metrics["recovery_n_shocks"]["mean"] == 0)
-        print(f"\n  Overall: {'PASS' if overall_pass else 'CHECK'}")
+        overall_pass = False
+        print("\n  Overall: DIAGNOSTIC ONLY (not a real-market validation pass)")
 
         all_results.append({
             "scenario": scen,
@@ -359,9 +367,9 @@ def main():
             "n_steps": args.steps,
             "metrics": metrics,
             "pass": {
-                "price_impact": lam_pass,
-                "liquidity_recovery": rec_pass,
-                "cascade_dynamics": cascade_pass,
+                "price_impact_positive_diagnostic": lam_positive,
+                "liquidity_recovery_observed": rec_observed,
+                "cascade_dynamics_observed": cascade_observed,
                 "overall": overall_pass,
             },
             "seed_results": seed_results,
@@ -372,9 +380,8 @@ def main():
     with open(out_path, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
 
-    all_pass = all(r["pass"]["overall"] for r in all_results)
     print(f"\n{'='*70}")
-    print(f"Overall result: {'ALL PASS' if all_pass else 'SOME CHECKS NEEDED'}")
+    print("Overall result: DIAGNOSTIC ONLY")
     print(f"Report saved to {out_path}")
 
 

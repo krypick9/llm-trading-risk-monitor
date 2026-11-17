@@ -155,7 +155,7 @@ class OrderBook:
         return sum(o.remaining for o in book[price])
 
     def depth(self, band: float) -> tuple:
-        """Total resting size within `band` (e.g. 0.005 = 0.5%) of the mid price,
+        """Total resting size within `band` (e.g. 0.001 = 0.1%) of the mid price,
         returned as (buy side, sell side). Zero if either side is empty."""
         mid = self.mid()
         if mid is None:

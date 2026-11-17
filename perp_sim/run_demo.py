@@ -13,7 +13,7 @@ import sys
 from bots import ContrarianBot, CrowdBot, MakerBot, TrendBot, ValueBot
 from engine import SCENARIOS, Exchange, SimConfig, write_csv
 
-CROWD_LEVERAGE = [6, 10, 14, 18]          # a spread of leverage, like real fleets
+CROWD_LEVERAGE = [6, 10, 14, 18]          # artificial stress mechanism, not a normal-trader estimate
 
 
 def build_population(seed: int, crowd_copies: int = 1) -> list:
@@ -28,10 +28,12 @@ def build_population(seed: int, crowd_copies: int = 1) -> list:
 
 def run(scenario_name: str, seed: int, n_steps: int = 120, step_minutes: float = 1.0,
         liquidations: bool = True, crowd_copies: int = 1, **config_overrides) -> Exchange:
+    bots = build_population(seed, crowd_copies)
+    config_overrides.setdefault("total_trader_collateral_budget",
+                                len(bots) * SimConfig().initial_collateral)
     cfg = SimConfig(n_steps=n_steps, step_minutes=step_minutes, seed=seed,
                     liquidations_enabled=liquidations, **config_overrides)
     exchange = Exchange(cfg, SCENARIOS[scenario_name])
-    bots = build_population(seed, crowd_copies)
     for bot in bots:
         exchange.add_account(bot.account_id)
     for _ in range(n_steps):
@@ -82,17 +84,21 @@ def pct(x, digits=1):
 
 def main():
     os.makedirs("output", exist_ok=True)
-    seed, name = 1, "stress-thin-early"
+    seed, name = 1, "stress-thin-synthetic-event"
 
     # ---- one detailed run ---------------------------------------------------
     ex = run(name, seed)
-    shock = ex.index.shock_step
     print(f"=== Detailed run: {name}, seed {seed}, {ex.cfg.n_steps} steps of "
           f"{ex.cfg.step_minutes:g} min, {len(build_population(seed))} bots ===")
-    print(f"Shock ({ex.scenario.shock_return:+.0%} on the reference price) hits at step {shock}.\n")
+    if getattr(ex.index, "has_replay", False):
+        print("Reference price follows the historical replay path.\n")
+    else:
+        print(f"Scheduled synthetic event ({ex.scenario.shock_return:+.2%}) "
+              f"hits at step {ex.index.shock_step}.\n")
     print(f"{'step':>4} {'reference':>10} {'last':>10} {'vs ref':>8} {'bid depth':>10} "
           f"{'funding est/h':>13} {'liq orders':>10} {'liq BTC':>8} {'near-liq':>9}")
-    for r in ex.records[max(0, shock - 3): shock + 12]:
+    display_start = max(0, ex.index.shock_step - 3)
+    for r in ex.records[display_start: display_start + 15]:
         gap = (r.last_price - r.index_price) / r.index_price
         print(f"{r.step:>4} {r.index_price:>10.0f} {r.last_price:>10.0f} {pct(gap, 2):>8} "
               f"{r.depth_bid:>10.2f} {r.funding_rate_est * 100:>12.4f}% {r.liq_count:>10} "
@@ -107,9 +113,9 @@ def main():
     print(f"  deepest dip of the exchange price below the reference price: "
           f"{pct(on['dip_below_ref'], 2)} with liquidations vs {pct(off['dip_below_ref'], 2)} without.")
 
-    # ---- all 8 scenarios, several seeds ------------------------------------
+    # ---- current scenario matrix, several seeds ----------------------------
     seeds = range(1, 9)
-    print(f"\n=== All 8 scenarios, averaged over {len(seeds)} seeds ===")
+    print(f"\n=== All {len(SCENARIOS)} scenarios, averaged over {len(seeds)} seeds ===")
     print(f"{'scenario':<20} {'liq accts':>9} {'runs w/ liq':>11} {'dip below ref':>14} "
           f"{'dip, liq off':>13} {'extra from liq':>15}")
     for scen in SCENARIOS:
@@ -122,10 +128,10 @@ def main():
               f"{sum(1 for r in a if r['liq_orders']):>8}/{n} "
               f"{pct(dip_on, 2):>14} {pct(dip_off, 2):>13} {pct(dip_on - dip_off, 2):>15}")
 
-    # ---- what decides whether a cascade forms --------------------------------
-    print(f"\n=== What makes forced selling feed on itself? ({name}, averaged over {len(seeds)} seeds) ===")
-    print("Two dials: how strongly the book is pulled back to the reference price each step,")
-    print("and how many leveraged longs are crowded in. Dip below reference, liquidations on vs off:")
+    # ---- sensitivity of forced selling to background liquidity ----------------
+    print(f"\n=== Background-liquidity sensitivity ({name}, averaged over {len(seeds)} seeds) ===")
+    print("Varying anchor strength and the deliberately crowded CrowdBot count is a mechanism sensitivity check,")
+    print("not evidence that typical traders or LLMs cause cascades. Dip below reference, liquidations on vs off:")
     print(f"{'pull to reference':>18} {'crowd size':>11} {'liq accts':>9} {'dip, liq on':>12} {'dip, liq off':>13}")
     for anchor in (0.5, 0.2, 0.1):
         for copies in (1, 3):
@@ -137,8 +143,9 @@ def main():
                   f"{sum(r['accounts_liquidated'] for r in a) / n:>9.1f} "
                   f"{pct(sum(r['dip_below_ref'] for r in a) / n, 2):>12} "
                   f"{pct(sum(r['dip_below_ref'] for r in b) / n, 2):>13}")
-    print("\nFull step-by-step record written to output/. Nothing here is calibrated: "
-          "every number is a placeholder.")
+    print("\nFull step-by-step record written to output/. These are minimarket "
+          "simulation outputs; consult the calibration report and synchronized "
+          "implementation plan before interpreting them as market evidence.")
 
 
 if __name__ == "__main__":

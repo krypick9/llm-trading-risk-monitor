@@ -44,6 +44,7 @@ sys.path.insert(0, PERP_SIM_DIR)
 from engine import SimConfig, Exchange, SCENARIOS, write_csv
 from engine.config import Scenario
 from baseline_crowd import make_crowd, open_accounts
+from bots import build_reference_population
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -88,6 +89,7 @@ def autocorrelation(x, lag=1):
 # Mini-market depth grid (in BTC, per side)
 # Real Bybit near_depth ~109 BTC; mini-market scaled for 50 agents
 MINI_MARKET_DEPTH_GRID = [1.0, 1.5, 2.0, 4.0, 8.0, 16.0]
+USE_CROWD_CALIBRATION = False
 
 # Seeds for multi-seed calibration (Q6 fix)
 CALIB_SEEDS = [42, 123, 456]
@@ -100,14 +102,20 @@ def run_one(scenario, seed=42, n_steps=600, n_bots=50):
         step_minutes=1.0,
         seed=seed,
         initial_collateral=1000.0,
+        total_trader_collateral_budget=n_bots * 1000.0,
         maintenance_margin_rate=0.01,
         funding_cap_per_hour=1.25e-05,
     )
 
     exchange = Exchange(cfg, scenario)
-    population = make_crowd(seed, n_total=n_bots)
-    open_accounts(exchange, population)
-    bots = population.bots
+    if USE_CROWD_CALIBRATION:
+        population = make_crowd(seed, n_total=n_bots)
+        open_accounts(exchange, population)
+        bots = population.bots
+    else:
+        bots = build_reference_population(seed, n_total=n_bots, include_crowd=False)
+        for bot in bots:
+            exchange.add_account(bot.account_id)
 
     for _ in range(n_steps):
         actions = []
@@ -119,19 +127,23 @@ def run_one(scenario, seed=42, n_steps=600, n_bots=50):
 
 
 def compute_sim_stats(exchange, cfg):
-    """Compute statistics from simulation output.
-    Q4 fix: keep zeros, report both variants."""
+    """Separate exogenous reference-index fit from endogenous local trades."""
     recs = exchange.records
-    prices = [cfg.initial_price] + [r.last_price for r in recs]
-    returns = np.diff(np.log(prices))
-
-    # Keep finite returns WITH zeros
-    returns = returns[np.isfinite(returns)]
+    index_prices = [cfg.initial_price] + [r.index_price for r in recs]
+    local_prices = [cfg.initial_price] + [r.last_price for r in recs]
+    returns = np.diff(np.log(index_prices))
+    exchange_returns = np.diff(np.log(local_prices))
+    returns = returns[np.isfinite(returns)]  # keep zeros
+    exchange_returns = exchange_returns[np.isfinite(exchange_returns)]  # keep zeros
+    exchange_returns_nonzero = exchange_returns[exchange_returns != 0]
 
     if len(returns) < 10:
         return {"sigma_hourly": 0, "jump_rate_per_hour": 0, "jump_mean": 0,
                 "jump_std": 0, "return_kurtosis": 0, "spread_rel": 0,
-                "depth_btc": 0, "shock_return": 0, "zero_return_pct": 0}
+                "depth_btc": 0, "shock_return": 0, "zero_return_pct": 0,
+                "exchange_sigma_hourly": 0, "exchange_zero_return_pct": 0,
+                "exchange_return_kurtosis": 0, "exchange_vol_acf1": 0,
+                "exchange_worst_1min_return": 0, "exchange_jump_rate_per_hour": 0}
 
     # Hourly volatility
     hourly_vols = []
@@ -162,11 +174,8 @@ def compute_sim_stats(exchange, cfg):
     depths = [r.depth_bid + r.depth_ask for r in recs]
     depth_btc = float(np.median(depths)) if depths else 0.0
 
-    # Shock (max drawdown)
-    cum = np.array(prices)
-    peak = np.maximum.accumulate(cum)
-    drawdown = (cum - peak) / peak
-    shock = float(np.min(drawdown))
+    # Largest one-minute external-index move; event/replay paths are scored separately.
+    shock = float(np.min(returns)) if len(returns) else 0.0
 
     # Zero returns
     n_zero = int(np.sum(returns == 0))
@@ -174,6 +183,10 @@ def compute_sim_stats(exchange, cfg):
 
     # Vol clustering ACF
     vol_acf1 = autocorrelation(returns ** 2, 1)
+    exchange_sigma = float(np.std(exchange_returns) * math.sqrt(60))
+    exchange_std = np.std(exchange_returns)
+    exchange_jumps = (exchange_returns[np.abs(exchange_returns) > 3 * exchange_std]
+                      if exchange_std > 0 else np.array([]))
 
     return {
         "sigma_hourly": float(sigma_hourly),
@@ -186,6 +199,15 @@ def compute_sim_stats(exchange, cfg):
         "shock_return": shock,
         "zero_return_pct": zero_pct,
         "vol_acf1": vol_acf1,
+        "exchange_sigma_hourly": exchange_sigma,
+        "exchange_zero_return_pct": (float(np.mean(exchange_returns == 0) * 100)
+                                      if len(exchange_returns) else 0.0),
+        "exchange_return_kurtosis": excess_kurtosis(exchange_returns),
+        "exchange_return_kurtosis_without_zeros": excess_kurtosis(exchange_returns_nonzero),
+        "exchange_vol_acf1": vol_acf1,
+        "exchange_worst_1min_return": float(np.min(exchange_returns)) if len(exchange_returns) else 0.0,
+        "exchange_jump_rate_per_hour": float(len(exchange_jumps) / (len(exchange_returns) / 60))
+        if len(exchange_returns) else 0.0,
     }
 
 
@@ -209,9 +231,6 @@ def calibrate_regime(targets, regime, quick=False):
 
     # --- Sigma grid ---
     sigma_grid = [target["sigma_hourly"] * f for f in [0.5, 0.75, 1.0, 1.25, 1.5]]
-    if regime == "stress":
-        sigma_grid = [target["sigma_hourly"]]   # no effect under replay
-
     # --- Depth grid (mini-market) ---
     depth_grid = MINI_MARKET_DEPTH_GRID
 
@@ -239,7 +258,7 @@ def calibrate_regime(targets, regime, quick=False):
     for idx, (sigma, depth, spread) in enumerate(product(sigma_grid, depth_grid, spread_grid)):
         walkaway = (regime == "stress")
         shock_ret = target.get("shock_return_1min", target.get("shock_return", -0.06))
-        use_replay = (regime == "stress")  # Q2 fix: replay for stress
+        use_replay = False  # fit synthetic ordinary-regime dynamics, not replay/event paths
 
         scenario = Scenario(
             name=f"calib-{regime}",
@@ -248,13 +267,13 @@ def calibrate_regime(targets, regime, quick=False):
             jump_rate_per_hour=target.get("jump_rate_per_hour", 0.7),
             jump_mean=target.get("jump_mean", -0.001),
             jump_std=target.get("jump_std", 0.0003),
-            shock_frac=0.35,
+            shock_frac=None,
             shock_return=shock_ret,
             bg_depth_btc=depth,
             bg_half_spread=spread,
             bg_walkaway=walkaway,
-            use_replay=use_replay,
-            replay_regime=("extreme" if regime == "stress" else regime),
+            use_replay=False,
+            replay_regime=regime,
         )
 
         # Multi-seed: average stats across seeds
@@ -275,7 +294,6 @@ def calibrate_regime(targets, regime, quick=False):
             "sigma_hourly": 3.0,
             "jump_rate_per_hour": 1.0,
             "spread_rel": 2.0,
-            "shock_return": 1.5,
         }
         for key, w in weights.items():
             t_val = abs(target.get(key, 0.001))
@@ -289,13 +307,16 @@ def calibrate_regime(targets, regime, quick=False):
         if avg_stats["depth_btc"] < 0.001:
             fit += 50
 
-        if avg_stats["return_kurtosis"] > 0:
-            fit -= 0.5
+        local_zero = avg_stats["exchange_zero_return_pct"]
+        if local_zero > 10.0:
+            fit += min(local_zero - 10.0, 80.0) / 10.0
 
         elapsed = time.time() - t0
         print(f"    [{idx+1}/{n_combos}] sigma={sigma:.6f} depth={depth:.1f} "
               f"spread={spread:.7f} → fit={fit:.4f} "
-              f"(sim_sigma={avg_stats['sigma_hourly']:.6f}, "
+              f"(index_sigma={avg_stats['sigma_hourly']:.6f}, "
+              f"exchange_sigma={avg_stats['exchange_sigma_hourly']:.6f}, "
+              f"exchange_zero={avg_stats['exchange_zero_return_pct']:.1f}%, "
               f"kurt={avg_stats['return_kurtosis']:.1f}) [{elapsed:.1f}s]")
 
         if best_fit is None or fit < best_fit:
@@ -309,8 +330,8 @@ def calibrate_regime(targets, regime, quick=False):
                 "bg_depth_btc": depth,
                 "bg_half_spread": spread,
                 "bg_walkaway": walkaway,
-                "use_replay": use_replay,
-                "replay_regime": ("extreme" if regime == "stress" else regime),
+                "use_replay": False,
+                "replay_regime": regime,
             }
             best_stats = avg_stats
 
@@ -320,7 +341,7 @@ def calibrate_regime(targets, regime, quick=False):
         print(f"    {k}: {v}")
     print(f"\n  Sim stats vs targets:")
     print(f"    {'metric':<22} {'target':>14} {'sim':>14} {'ratio':>8}")
-    for key in ["sigma_hourly", "jump_rate_per_hour", "spread_rel", "shock_return"]:
+    for key in ["sigma_hourly", "jump_rate_per_hour", "spread_rel"]:
         t = target.get(key, 0)
         s = best_stats.get(key, 0)
         ratio = f"{s/t:.2f}" if t != 0 else "N/A"
@@ -329,6 +350,9 @@ def calibrate_regime(targets, regime, quick=False):
     print(f"    {'depth_btc (sim)':<22} {'(mini)':>14} {best_stats.get('depth_btc', 0):>14.4f}")
     print(f"    {'zero_return_pct':<22} {'(info)':>14} {best_stats.get('zero_return_pct', 0):>14.2f}%")
     print(f"    {'vol_acf1':<22} {'(info)':>14} {best_stats.get('vol_acf1', 0):>14.4f}")
+    print(f"    {'local_sigma_hourly':<22} {'(diagnostic)':>14} {best_stats.get('exchange_sigma_hourly', 0):>14.6f}")
+    print(f"    {'local_zero_return_pct':<22} {'(diagnostic)':>14} {best_stats.get('exchange_zero_return_pct', 0):>14.2f}%")
+    print(f"    {'local_worst_1min':<22} {'(diagnostic)':>14} {best_stats.get('exchange_worst_1min_return', 0):>14.4%}")
 
     return best_params, best_stats, best_fit
 
@@ -341,7 +365,11 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--include-crowd", action="store_true",
+                        help="use the legacy Crowd-heavy population for a separate mechanism sensitivity")
     args = parser.parse_args()
+    global USE_CROWD_CALIBRATION
+    USE_CROWD_CALIBRATION = args.include_crowd
 
     targets = load_targets()
 
@@ -379,17 +407,25 @@ def main():
     held_out = targets.get("held_out", {})
     result = {
         "_meta": {
-            "version": "v2 (post-TA fixes)",
+            "version": "phase0-validation-sync-2026-11-18",
             "mode": "quick" if args.quick else "full",
             "n_seeds": len(CALIB_SEEDS[:1] if args.quick else CALIB_SEEDS),
+            "acceptance_status": "SMOKE_ONLY" if args.quick else "requires independent validation",
             "n_steps": 600,
             "n_bots": 50,
+            "include_crowd": args.include_crowd,
+            "population_role_counts": {
+                role: sum(1 for bot in build_reference_population(0, 50, include_crowd=args.include_crowd)
+                          if bot.kind == role)
+                for role in ("crowd", "trend", "contrarian", "value", "maker")
+            },
             "collateral_per_bot": 1000,
             "calibration_date": time.strftime("%Y-%m-%d"),
             "fixes": [
                 "Q1: spread from Bybit spread_bps_mean (not Binance bookDepth artifact)",
                 "Q1: depth from Bybit near_depth_usd within 0.1% (not full-book sum)",
-                "Q2: stress regime uses ReplayIndexPrice (historical path replay)",
+                "Q2: replay paths excluded from synthetic parameter fitting",
+                "Training uses Crowd-excluded reference population by default",
                 "Q4: zero returns retained in all statistics",
                 "Q6: multi-seed calibration (3 seeds)",
                 "Q6: held-out validation comparison",
@@ -415,6 +451,9 @@ def main():
             "jump_params": "Taken directly from real data (inputs to index process)",
             "replay": "Stress regime replays real Oct 9 crash path (Q2 fix)",
             "multi_seed": "Stats averaged across 3 seeds to reduce noise (Q6 fix)",
+            "fit_series": "Return volatility/jumps are fit on external index; local last-price activity is diagnostic and penalized when near-stale",
+            "validation_scope": "Calibration fit does not validate local impact, tail behavior or liquidation cascades",
+            "current_run_warning": "The checked-in latest output is one-seed quick smoke only, not a full calibration acceptance result",
         },
     }
 

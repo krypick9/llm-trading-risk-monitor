@@ -1,5 +1,7 @@
 # Change Log: Post-TA Fixes (Q1–Q7)
 
+> **Historical snapshot:** This November 10, 2026 document records earlier design and calibration work. Its scenario labels, replay description, “stylized facts pass” summary, and proposed run matrix are superseded by `docs/design-docs/implementation_plan_v3.md` (synchronized November 16, 2026). Do not use this changelog as the current experiment specification.
+
 **Date**: 2026-11-10
 **Repository**: `krypick9/llm-trading-risk-monitor`
 **Commits**: `6267637`, `d6fa6e9` (pushed to `origin/main`) + uncommitted Q5/Q6/Q7 deliverables
@@ -212,7 +214,7 @@ Documents the theoretical basis for all modeling choices:
 
 ---
 
-## Scenario Configuration (8 scenarios)
+## Scenario Configuration (historical snapshot: 8 scenarios; current candidate matrix: 12)
 
 | Scenario | Regime | Depth | Shock timing | Replay |
 |----------|--------|-------|-------------|--------|

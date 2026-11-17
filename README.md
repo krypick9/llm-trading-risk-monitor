@@ -19,11 +19,11 @@ fyp-llm-risk-monitoring/
 ├── .gitignore
 ├── .env.example               # template for API keys (never commit .env)
 ├── requirements.txt           # Python dependencies
-├── perp_sim/                  # Phase 0: Synthetic perpetual-futures market
+├── perp_sim/                  # Phase 0: calibrated minimarket environment
 │   ├── engine/                #   core engine (orderbook, accounts, exchange, etc.)
-│   ├── bots.py                #   scripted traders (temporary, replaced by LLM agents in Phase 1)
+│   ├── bots.py                #   scripted traders for environment development/control
 │   ├── run_demo.py            #   demo runner
-│   ├── tests/                 #   41 automated checks
+│   ├── tests/                 #   automated checks
 │   └── output/                #   demo output CSVs (gitignored)
 ├── docs/
 │   ├── proposal/              # Final proposal PDF + slides
@@ -67,25 +67,27 @@ pip install -r requirements.txt
 
 # 4. Run the demo (perp_sim Phase 0)
 cd perp_sim
-python run_demo.py
+python3 run_demo.py
 
 # 5. Run the tests
-python -m unittest discover -s tests -t .
+python3 -m unittest discover -s tests -t .
 ```
 
 ## Phase Overview
 
 | Phase | Question | What perp_sim provides |
 |-------|----------|----------------------|
-| 1. Risk discovery | How does risk change as the number of AI agents N grows? | The market + step-by-step log |
+| 1. Risk discovery | In a fixed population, how does replacing role-matched scripted decision-makers with LLMs change risk? | Planned; Phase 1 runner and LLM agents are not implemented |
 | 2. Intervention testing | Which rules (leverage cap, circuit breaker) reduce risk? | Config dials + forced-closing switch |
 | 3. Detection & prediction | Can public signals warn us before a cascade? | 28 public log columns (sim-only columns are labels, not inputs) |
 
 ## Important Notes
 
-- **All simulator numbers are placeholders** until calibrated on real data.
-- The 8-scenario design is a placeholder pending team confirmation.
-- LLM agents are not yet implemented — scripted bots stand in for them.
+- The simulator is a calibrated minimarket under development; current reports show material fidelity gaps. See `docs/design-docs/implementation_plan_v3.md`.
+- The current 50-scripted-bot calibration setup is not the final Phase 1 control population.
+- The final 100-slot role mix, aggregate collateral budget and replacement config remain to be approved.
+- LLM agents and the Phase 1 replacement runner are not yet implemented.
+- The external index-to-local price transmission has only been partially improved: after a one-seed quick smoke fit, frozen-dial diagnostics show local volatility near 0.74x target but ~60% zero-change minutes vs ~0.56% real; clustering is slightly outside tolerance and tails are ~2.5x target. The dates have been inspected and are not independent validation.
 - API keys must never be committed. Use `.env` (see `.env.example`).
 
 ## Data Sources

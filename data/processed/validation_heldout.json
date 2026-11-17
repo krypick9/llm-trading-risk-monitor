@@ -5,62 +5,90 @@
     "2025-10-13",
     "2025-10-20"
   ],
-  "scaling_ratios": {
-    "sigma": 1.5664162272463764,
-    "depth": 0.6052669816932017,
-    "spread": 1.0434886939971386
-  },
-  "scaled_dials": {
-    "sigma": 0.0021354344011200632,
-    "depth": 1.5,
-    "spread": 4.490851628568727e-07
+  "held_out_is_independent_validation": false,
+  "independence_note": "Dates have been inspected previously; this is a diagnostic rerun, not a fresh untouched validation.",
+  "validation_note": "Training dials remain frozen; held-out metrics do not change simulator parameters.",
+  "frozen_training_dials": {
+    "sigma": 0.0025967315889218103,
+    "depth": 4.0,
+    "spread": 8.765756414142713e-07
   },
   "n_seeds": 10,
-  "main": {
+  "metrics": {
     "sigma_hourly": {
-      "mean": 0.0021194760520169527,
-      "sd": 0.0006740558292049377
+      "mean": 0.002894895838729547,
+      "sd": 0.00017705273610253794
     },
     "vol_acf1": {
-      "mean": 0.26252648902823583,
-      "sd": 0.12436796136593618
+      "mean": 0.0028362841443969377,
+      "sd": 0.021193577057481972
     },
     "return_kurtosis": {
-      "mean": 32.81633351819527,
-      "sd": 8.224700364409602
+      "mean": 9.863537634456021,
+      "sd": 3.6582714532365297
     },
     "zero_return_pct": {
-      "mean": 0.5000000000000001,
-      "sd": 0.23570226039551584
+      "mean": 0.0,
+      "sd": 0.0
     },
     "spread_rel": {
-      "mean": 1.017798870511102e-06,
-      "sd": 9.156057006924388e-09
+      "mean": 2.0203776679995198e-06,
+      "sd": 1.809643183285176e-08
+    },
+    "exchange_sigma_hourly": {
+      "mean": 0.0031457488043271703,
+      "sd": 0.000286186654319316
+    },
+    "exchange_zero_return_pct": {
+      "mean": 60.116666666666674,
+      "sd": 2.244808826307192
+    },
+    "exchange_return_kurtosis": {
+      "mean": 19.08636334279291,
+      "sd": 3.4794125627013277
+    },
+    "exchange_vol_acf1": {
+      "mean": 0.0028362841443969377,
+      "sd": 0.021193577057481972
+    },
+    "exchange_worst_1min_return": {
+      "mean": -0.0029104368975996662,
+      "sd": 0.00031917057228011134
+    },
+    "exchange_jump_rate_per_hour": {
+      "mean": 1.8500000000000003,
+      "sd": 0.16881943016134127
     }
   },
-  "control": {
-    "sigma_hourly": {
-      "mean": 0.0020797055199141975,
-      "sd": 0.0006320507431042182
+  "scenario_type": "synthetic_no_event",
+  "scored_checks_passed": 2,
+  "scored_checks_total": 3,
+  "rules": [
+    {
+      "name": "local_sigma",
+      "passed": true,
+      "note": "ratio 0.74 (band 0.7-1.3)"
     },
-    "vol_acf1": {
-      "mean": 0.26494054346885154,
-      "sd": 0.058912713184600174
+    {
+      "name": "vol_acf1",
+      "passed": false,
+      "note": "difference -0.163 (band +/-0.15)"
     },
-    "return_kurtosis": {
-      "mean": 42.07504080126803,
-      "sd": 18.448350625039044
+    {
+      "name": "kurtosis",
+      "passed": true,
+      "note": "ratio 2.51 (band 0.33-3)"
     },
-    "zero_return_pct": {
-      "mean": 0.6166666666666667,
-      "sd": 0.2242270674512285
+    {
+      "name": "flat_minutes",
+      "passed": null,
+      "note": "descriptive only; previous fixed interval was invalid"
     },
-    "spread_rel": {
-      "mean": 1.0176871837189628e-06,
-      "sd": 7.0282952556923525e-09
+    {
+      "name": "spread",
+      "passed": null,
+      "note": "ratio 2.25; diagnostic only because dial is data-derived"
     }
-  },
-  "rules_passed_main": 2,
-  "rules_passed_control": 2,
-  "verdict": "NOT VALIDATED"
+  ],
+  "verdict": "DIAGNOSTIC ONLY \u2014 not independent validation"
 }

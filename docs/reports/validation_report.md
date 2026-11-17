@@ -1,12 +1,16 @@
 # Validation report (held-out days, microstructure, crash)
 
+> **Superseded status (2026-11-18): Do not use the scores or presenter wording below as current validation.** The original held-out script injected an event into the test path, changed dials using the held-out statistics before scoring the same dates, used an invalid flat-minute rule, and treated dial-derived spread as a pass. The October dates were also inspected previously; they are not untouched validation. The original files and code are retained below as historical team notes, but their “2 of 5 / one-shot” framing is invalid. See `docs/reports/environment_validation_update_for_team_en.md` for the current interpretation and rerun commands.
+
+> **Environment status:** LP anchoring was raised from 0.2 to 0.8 to improve index-to-quote transmission, but this only partially addresses the problem. After the one-seed local quick smoke fit, the frozen-dial diagnostic found local volatility about 0.74x target, roughly 60% zero-change minutes versus 0.56% real, clustering slightly outside tolerance, and tails about 2.5x target. A quote following the index does not cause a trade; bots or liquidation orders must still hit the book. Treat 0.8 as provisional and rerun full multi-seed calibration/validation.
+
 Status: draft for the group presentation. Numbers come from the files in `data/processed/`
 (`validation_heldout.json`, `cascade_validation_report.json`, `validation_microstructure.json`).
 Commit reviewed: `691a237`.
 
 ## 1. One-paragraph summary
 
-We tuned the simulator on calm days, then tested it on four calm days it never saw.
+Historical wording (superseded): We tuned the simulator on calm days, then tested it on four calm days it never saw.
 It **did not pass** (2 of 5 rules). On top of that, the two rules it passed are weaker evidence than they look
 (section 3). A new side-by-side check against real data (section 4) shows the simulator's price impact is much
 weaker than real, its order book empties far more deeply after a shock, and its spread has a heavy tail the real

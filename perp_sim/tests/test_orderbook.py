@@ -81,6 +81,14 @@ class OrderBookTests(unittest.TestCase):
         self.assertAlmostEqual(bid, 2.0)
         self.assertAlmostEqual(ask, 3.0)
 
+    def test_empirical_near_depth_band_is_tenth_percent(self):
+        self.book.submit(limit(1, "a", BUY, 2, 99.95))
+        self.book.submit(limit(2, "b", BUY, 5, 99.80))
+        self.book.submit(limit(3, "c", SELL, 3, 100.05))
+        bid, ask = self.book.depth(0.001)
+        self.assertAlmostEqual(bid, 2.0)
+        self.assertAlmostEqual(ask, 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()

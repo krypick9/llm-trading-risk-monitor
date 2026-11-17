@@ -18,12 +18,18 @@ HELD = {"sigma_hourly": 0.004, "vol_clustering_acf1_with_zeros": 0.17, "kurtosis
 
 def sim(sigma=0.004, acf=0.17, kurt=7.6, zero=3.0, spread=9e-7):
     return {"sigma_hourly": (sigma, 0), "vol_acf1": (acf, 0), "return_kurtosis": (kurt, 0),
-            "zero_return_pct": (zero, 0), "spread_rel": (spread, 0)}
+            "zero_return_pct": (zero, 0), "spread_rel": (spread, 0),
+            "exchange_sigma_hourly": (sigma, 0), "exchange_vol_acf1": (acf, 0),
+            "exchange_return_kurtosis": (kurt, 0), "exchange_zero_return_pct": (zero, 0),
+            "exchange_worst_1min_return": (-0.01, 0), "exchange_jump_rate_per_hour": (0.1, 0)}
 
 
 class HeldOutRuleTests(unittest.TestCase):
-    def test_perfect_match_passes_all_five(self):
-        self.assertTrue(all(r[3] for r in judge(sim(), HELD)))
+    def test_frozen_series_match_passes_three_independent_checks(self):
+        rules = judge(sim(), HELD)
+        self.assertTrue(all(r[3] for r in rules[:3]))
+        self.assertIsNone(rules[3][3])  # flat-return frequency is descriptive only
+        self.assertIsNone(rules[4][3])  # spread dial is not independent evidence
 
     def test_volatility_band_is_0p7_to_1p3(self):
         self.assertFalse(judge(sim(sigma=0.004 * 0.69), HELD)[0][3])
@@ -33,9 +39,8 @@ class HeldOutRuleTests(unittest.TestCase):
         self.assertFalse(judge(sim(kurt=7.6 * 3.1), HELD)[2][3])
         self.assertTrue(judge(sim(kurt=7.6 * 2.9), HELD)[2][3])
 
-    def test_flat_minute_rule_is_absolute_one_to_six_percent(self):
-        # documents the known weakness: real held-out days have 0.56%, rule needs 1-6%
-        self.assertFalse(judge(sim(zero=0.56), HELD)[3][3])
+    def test_flat_minutes_are_not_scored_by_the_invalid_fixed_interval(self):
+        self.assertIsNone(judge(sim(zero=0.56), HELD)[3][3])
 
 
 class MicrostructureHelperTests(unittest.TestCase):

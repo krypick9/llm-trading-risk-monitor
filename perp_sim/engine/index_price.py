@@ -6,10 +6,10 @@ background liquidity provider keeps its quotes loosely tied to it.
 Two implementations:
 
 1. IndexPriceProcess (synthetic)
-   A random walk with occasional jumps plus one scheduled shock.
-   Used for normal-regime scenarios where the exact path doesn't matter.
+    A random walk with occasional jumps and an optional scheduled shock.
+    Used for synthetic no-event calibration and scheduled-event scenarios.
 
-2. ReplayIndexPrice (historical replay — Q2 fix)
+2. ReplayIndexPrice (historical replay)
    Replays a real 1-min BTC price path from Bybit/Binance data.
    This replaces the old approach where a daily drawdown (-13.15%) was
    applied as a single-minute jump (~100σ). Now the crash unfolds at its

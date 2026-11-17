@@ -1,9 +1,10 @@
 """
 Scripted trading bots: simple rule-followers, NO AI and NO API cost.
 
-They exist only to test the exchange (can leveraged traders set off a
-liquidation cascade?). In Phase 1 the LLM agents replace them. The contract
-is the same one the LLM agents will use:
+They currently support environment mechanics tests and calibration. In the
+planned Phase 1 experiment, role-matched LLM policies may replace scripted
+policies in fixed account slots; that runner is not implemented yet. The
+shared action contract is:
 
     bot.act(view)  ->  a list of actions (OrderRequest / CancelAll)
 
@@ -193,3 +194,46 @@ class MakerBot(Bot):
         if pos > -self.inventory_limit:
             actions.append(OrderRequest(self.account_id, SELL, self.size, price=centre * (1 + self.half_spread)))
         return actions
+
+
+def _largest_remainder_counts(n_total: int, weights: dict[str, float]) -> dict[str, int]:
+    """Allocate integer account slots while preserving declared role shares."""
+    exact = {role: n_total * weight for role, weight in weights.items()}
+    counts = {role: math.floor(value) for role, value in exact.items()}
+    remaining = n_total - sum(counts.values())
+    role_order = {role: i for i, role in enumerate(weights)}
+    order = sorted(weights, key=lambda role: (exact[role] - counts[role], -role_order[role]),
+                   reverse=True)
+    for role in order[:remaining]:
+        counts[role] += 1
+    return counts
+
+
+def build_reference_population(seed: int, n_total: int = 50,
+                               include_crowd: bool = False) -> list[Bot]:
+    """Build the shared Phase-0 reference population.
+
+    The primary reference excludes CrowdBot. Its provisional role weights are
+    normalized from the non-Crowd shares in the former calibration mix:
+    Trend 34%, Contrarian 23%, Value 23%, Maker 20%. These are modeling weights,
+    not estimates of real-market participant prevalence. CrowdBot is available
+    only as an explicit, separately labeled stress-mechanism sensitivity.
+    """
+    if n_total <= 0:
+        raise ValueError("n_total must be positive")
+    roles = {"trend": 0.34, "contrarian": 0.23, "value": 0.23, "maker": 0.20}
+    crowd_count = math.floor(n_total * 0.40) if include_crowd else 0
+    role_counts = _largest_remainder_counts(n_total - crowd_count, roles)
+    bots: list[Bot] = []
+    if crowd_count:
+        crowd_leverage = [6, 10, 14, 18]
+        bots.extend(CrowdBot(f"crowd{i}", seed, crowd_leverage[i % len(crowd_leverage)],
+                             act_prob=0.7) for i in range(crowd_count))
+    bots.extend(TrendBot(f"trend{i}", seed, leverage=4 + i % 3, act_prob=0.5)
+                for i in range(role_counts["trend"]))
+    bots.extend(ContrarianBot(f"contrarian{i}", seed, act_prob=0.5)
+                for i in range(role_counts["contrarian"]))
+    bots.extend(ValueBot(f"value{i}", seed, act_prob=0.5)
+                for i in range(role_counts["value"]))
+    bots.extend(MakerBot(f"maker{i}", seed) for i in range(role_counts["maker"]))
+    return bots

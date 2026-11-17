@@ -116,6 +116,33 @@ class FundingTests(unittest.TestCase):
         self.assertEqual(settled, [12, 24])               # 12 steps x 5 min = 1 hour
 
 
+class CircuitBreakerTests(unittest.TestCase):
+    def test_cooldown_expiry_rechecks_persistent_breach(self):
+        cfg = SimConfig(n_steps=10, circuit_breaker_enabled=True,
+                        circuit_breaker_pct=0.01,
+                        circuit_breaker_cooldown_steps=2)
+        ex = Exchange(cfg, quiet_scenario(shock_frac=None))
+        ex.last_price = 98_000.0
+        ex.step([])
+        ex.step([])
+        ex.step([])
+        self.assertTrue(ex.circuit_breaker_active)
+        self.assertGreater(ex.circuit_breaker_until, ex.step_count)
+
+    def test_cooldown_expiry_turns_breaker_off_when_back_in_band(self):
+        cfg = SimConfig(n_steps=10, circuit_breaker_enabled=True,
+                        circuit_breaker_pct=0.01,
+                        circuit_breaker_cooldown_steps=2)
+        ex = Exchange(cfg, quiet_scenario(shock_frac=None))
+        ex.last_price = 98_000.0
+        ex.step([])
+        ex.last_price = ex.index_price
+        ex.step([])
+        ex.step([])
+        ex.step([])
+        self.assertFalse(ex.circuit_breaker_active)
+
+
 class LiquidationTests(unittest.TestCase):
     def run_shock(self, leverage_qty, shock=-0.10, thin_after_open=None):
         # pin the dial this test depends on: the exchange price must catch up
@@ -166,7 +193,7 @@ class LiquidationTests(unittest.TestCase):
 class ReproducibilityTests(unittest.TestCase):
     def run_once(self, seed, extra_idle_accounts=0):
         cfg = SimConfig(n_steps=40, seed=seed)
-        ex = Exchange(cfg, SCENARIOS["normal-thin-early"])
+        ex = Exchange(cfg, SCENARIOS["normal-thin-synthetic-no-event"])
         ex.add_account("a")
         for i in range(extra_idle_accounts):
             ex.add_account(f"idle{i}")
@@ -189,14 +216,22 @@ class ReproducibilityTests(unittest.TestCase):
 
 
 class ScenarioTests(unittest.TestCase):
-    def test_there_are_eight_distinct_scenarios(self):
-        self.assertEqual(len(SCENARIOS), 8)
-        self.assertEqual(sum(1 for s in SCENARIOS.values() if s.regime == "normal"), 4)
+    def test_there_are_twelve_distinct_scenarios(self):
+        self.assertEqual(len(SCENARIOS), 12)
+        self.assertEqual(sum(1 for s in SCENARIOS.values() if s.regime == "normal"), 6)
 
     def test_shock_timing_scales_with_run_length(self):
-        s = SCENARIOS["stress-thin-early"]
-        self.assertEqual(s.shock_step(100), 35)
-        self.assertEqual(s.shock_step(1000), 350)
+        s = SCENARIOS["stress-thin-synthetic-event"]
+        self.assertEqual(s.shock_step(100), 50)
+        self.assertEqual(s.shock_step(1000), 500)
+
+    def test_no_event_has_no_scheduled_shock(self):
+        self.assertIsNone(SCENARIOS["normal-thick-synthetic-no-event"].shock_step(600))
+
+    def test_replay_scenario_ignores_scheduled_shock(self):
+        s = SCENARIOS["stress-thin-replay"]
+        self.assertTrue(s.use_replay)
+        self.assertIsNone(s.shock_step(600))
 
 
 if __name__ == "__main__":

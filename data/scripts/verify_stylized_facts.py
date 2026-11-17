@@ -249,7 +249,7 @@ def main():
     if args.scenario:
         test_scenarios = [args.scenario]
     else:
-        test_scenarios = ["normal-thick-early", "stress-thin-early"]
+        test_scenarios = ["normal-thick-synthetic-no-event", "stress-thin-synthetic-no-event"]
 
     # Load held-out targets for comparison
     cal_targets = load_calibration_targets()

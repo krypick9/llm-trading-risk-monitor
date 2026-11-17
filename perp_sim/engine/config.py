@@ -1,22 +1,8 @@
-"""
-Settings for one simulation run.
+"""Configuration for one experiment or calibration run.
 
-v2 (post-TA fixes) — calibrated against teammate's 22-day real data:
-  - Bybit orderbook: spread_bps_mean, near_depth_usd (Q1 fix)
-  - Binance aggTrades: 1-min OHLCV for volatility, jumps, kurtosis
-  - Historical path replay for stress regime (Q2 fix)
-  - Zero returns retained in all statistics (Q4 fix)
-  - Multi-seed calibration + 8-day held-out validation (Q6 fix)
-
-The mini-market design (Decision #1, Section 3.6 of FYP plan):
-  Agents have $1000 collateral each. Background depth is scaled so that
-  50-100 agents can meaningfully move prices. Absolute numbers are smaller
-  than real markets, but relative proportions (agent position vs book depth)
-  are preserved, which is what drives cascade dynamics.
-
-To scale up: change n_steps and step_minutes here. Nothing else in the
-engine hard-codes a run length: funding timing, scenario shock timing
-and the like all follow from these two numbers.
+The checked-in Bybit near-depth target is measured within ±0.10% of mid;
+the environment is still a minimarket and does not yet match local trade
+activity, spreads or impact. Phase 1 economics need team approval.
 """
 
 from dataclasses import dataclass
@@ -29,14 +15,15 @@ class SimConfig:
     step_minutes: float = 1.0        # real time that one step stands for
 
     # ---- the market --------------------------------------------------------
-    initial_price: float = 100_000.0  # roughly BTC-sized price
-    tick_size: float = 0.1            # smallest price move (binary-exact on purpose)
+    initial_price: float = 100_000.0  # replay paths are rescaled to this anchor
+    tick_size: float = 0.1            # matches the current Bybit BTCUSDT reference
     lot_size: float = 0.001           # smallest order size, in BTC
 
     # ---- accounts and leverage --------------------------------------------
     max_leverage: float = 20.0           # per-account cap (Phase 2 tests lowering it)
     maintenance_margin_rate: float = 0.01  # calibrated to Hyperliquid (~1%)
     initial_collateral: float = 1000.0     # mini-market: $1000 per trader
+    total_trader_collateral_budget: float | None = None
 
     # ---- fees (calibrated to Binance/Hyperliquid rates) -------------------
     taker_fee: float = 0.00045
@@ -52,16 +39,16 @@ class SimConfig:
     # The one place the exchange price is tied to the outside world. These two
     # dials decide whether forced selling can feed on itself, so they are the
     # first things to calibrate on real order-book data:
-    #   bg_anchor_strength: 0 = ignores the reference price, 1 = snaps to it each step
+    #   bg_anchor_strength: 0 = ignores the reference price, 1 = follows it fully
     #   bg_levels x bg_level_gap: how far from the price the book's liquidity reaches.
-    #     Default 5 x 0.30% = 1.5%. A book that reaches only 0.1% away cannot be
-    #     pushed far by forced sales, however large (tested), so no cascade can form.
-    bg_anchor_strength: float = 0.2
+    #     Provisional candidates only; ladder shape still needs empirical fitting.
+    bg_anchor_strength: float = 0.8
     bg_levels: int = 5                # how many price levels it quotes per side
-    bg_level_gap: float = 0.003       # spacing between its levels (0.30%)
+    bg_level_gap: float = 0.003       # 0.30% spacing; preserve baseline pending full ladder re-fit
+    bg_walkaway_threshold: float = 0.01  # retreat threshold over the 5-step lookback
 
     # ---- measurement -------------------------------------------------------
-    depth_band: float = 0.001         # "depth" = size within 0.5% of the mid price
+    depth_band: float = 0.001         # Bybit near-depth uses a ±0.10% band
     near_liq_buffer: float = 0.05     # an account is "near liquidation" below 5% buffer
 
     # ---- liquidation engine ------------------------------------------------
@@ -112,6 +99,8 @@ class Scenario:
     replay_regime: str = ""    # which replay path to use ("normal" or "stress")
 
     def shock_step(self, n_steps: int) -> int | None:
+        if self.use_replay:
+            return None
         if self.shock_frac is None:
             return None
         return max(1, round(self.shock_frac * n_steps))

@@ -1,5 +1,15 @@
 # Calibration Report — perp_sim Simulator
 
+> **Status note (2026-11-17): Historical report, not an acceptance claim.** This report predates the synchronized scenario and calibration logic. Its population, path handling, metrics and fit figures need regeneration. The checked-in Bybit file documents `near_depth_usd` at ±0.10%; older text called it 0.5%. The simulator now aligns to 0.10%, but this report's numeric results used previous settings. Oct 10 was later used to select the stress path, so it is not untouched validation. The old “stylized facts passed” statement does not mean the simulated market is calibrated. See `docs/design-docs/implementation_plan_v3.md` for current gates.
+
+> **Additional validation finding (2026-11-18):** Calibration of the external index path did not make the endogenous order-book market realistic. After the one-seed quick smoke fit, the corrected frozen-dial diagnostic on previously inspected held-out dates shows local traded-price volatility about 0.74x target, ~60% zero-change minutes versus ~0.56% real, clustering slightly outside tolerance, and tails about 2.5x target. A prior validation also used a fixed flat-minute interval inconsistent with the measured rate, injected a scheduled shock into held-out paths, and tuned using held-out statistics. See `docs/reports/validation_report.md` (marked superseded); the quick calibration and diagnostic are not acceptance results.
+
+> **Date-split correction (2026-11-18):** The checked-in targets previously included Oct 10 in the held-out set even though that date was used to choose the known crash replay, and cross-date return calculation could count a data gap as a one-minute move. The target generator now uses explicit train/held-out dates, reserves Oct 10 for known replay only, and computes returns within each day. Regenerate `calibration_targets.json` before validation; the current target artifact is stale until regenerated.
+
+> **Held-out tuning leakage correction (2026-11-18):** The previous validation script scaled volatility, depth and spread using statistics from the held-out dates, then scored the same dates. That is exploratory tuning, not independent validation. The replacement validator freezes training-calibrated dials and does not use held-out target values to change the environment.
+
+> **Frozen-dial diagnostic:** On the already-inspected post-crash held-out dates, after one-seed quick smoke calibration, local traded-price volatility is about 0.74x target; zero-return minutes are about 60% vs 0.56% in the real sample; clustering is slightly outside tolerance and tails are about 2.5x target. These are diagnostics, not final multi-seed results or a fresh untouched validation. The LP anchor increase improves transmission only partially: it moves quote centres, but cannot cause orders or fills by itself.
+
 **Project:** Risk Monitoring for LLM Trading Agents (FYP Group 30)
 **Date:** November 2025
 **Calibrated by:** Automated grid search (200 combinations) against real BTC perpetual futures data
@@ -172,7 +182,7 @@ After applying calibrated parameters, the simulator was tested for three statist
 
 **Interpretation:** Buy orders tend to follow buy orders, and sell orders follow sell orders. This momentum in order flow is a well-documented property of real markets and is what enables trends to form.
 
-### Overall: ALL THREE STYLIZED FACTS PASS for both normal and stress scenarios.
+### Historical summary (superseded): ALL THREE STYLIZED FACTS PASS for both normal and stress scenarios.
 
 ---
 
@@ -203,7 +213,7 @@ After applying calibrated parameters, the simulator was tested for three statist
 
 4. **Mini-market scaling works:** With $1000 collateral and 0.5-8 BTC depth, 50 bots create meaningful price movement and realistic cascade dynamics.
 
-5. **All stylized facts pass:** The simulator produces fat-tailed returns, volatility clustering, and order flow autocorrelation — three key properties of real financial markets.
+5. **Historical stylized-fact checks:** The earlier report marked fat tails, volatility clustering, and order-flow autocorrelation as passing, but those checks do not establish market calibration; rerun under the current population, path, tick and depth-band settings.
 
 ---
 

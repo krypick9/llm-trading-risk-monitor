@@ -179,9 +179,9 @@ def main():
 
     real = {"train": real_calm(d, train_days), "held_out": real_calm(d, held_days), "crash": real_crash(d)}
     sim = {}
-    for scn in ["normal-thick-early", "normal-thin-early"]:
+    for scn in ["normal-thick-synthetic-no-event", "normal-thin-synthetic-no-event"]:
         sim[scn] = avg([sim_stats(run_sim(scn, s), crash=False) for s in seeds])
-    for scn in ["stress-thick-early", "stress-thin-early"]:
+    for scn in ["stress-thick-replay", "stress-thin-replay"]:
         sim[scn] = avg([sim_stats(run_sim(scn, s), crash=True) for s in seeds])
 
     print("=" * 74)
@@ -189,7 +189,7 @@ def main():
     print("=" * 74)
     cmp_ = {}
     ref = real["held_out"]
-    for scn in ["normal-thick-early", "normal-thin-early"]:
+    for scn in ["normal-thick-synthetic-no-event", "normal-thin-synthetic-no-event"]:
         s = sim[scn]
         rows = [band("price_impact_norm", s["price_impact_norm"], ref["price_impact_norm"], 0.5, 2.0),
                 band("impact_r2", s["impact_r2"], ref["impact_r2"], 0.5, 2.0),
@@ -202,10 +202,10 @@ def main():
                   f"{'CLOSE' if r['within_band'] else 'OFF'} ({r['band']})")
         print(f"  {'spread > 1 bp (share of minutes)':<32} sim {s['spread_gt_1bps']:>10.4f}  real {ref['spread_gt_1bps']:>10.4f}")
     rc = real["crash"]
-    print("\nCrash window (real 10 Oct 12:00 UTC +600 min vs stress scenarios)")
+    print("\nCrash window (real 10 Oct 12:00 UTC +600 min vs historical replay scenarios)")
     print(f"  {'':<22}{'depth min/pre':>15}{'max spread bp':>16}{'worst 1-min':>13}{'max DD':>10}{'liqs':>7}")
     print(f"  {'REAL':<22}{rc['depth_min_vs_pre']:>15.3f}{rc['spread_max_bps']:>16.2f}{rc['worst_1min_return']:>13.4f}{rc['max_drawdown']:>10.4f}{'n/a':>7}")
-    for scn in ["stress-thick-early", "stress-thin-early"]:
+    for scn in ["stress-thick-replay", "stress-thin-replay"]:
         s = sim[scn]
         print(f"  {scn:<22}{s['depth_min_vs_pre']:>15.3f}{s['spread_max_bps']:>16.2f}{s['worst_1min_return']:>13.4f}{s['max_drawdown']:>10.4f}{s['liquidations']:>7.1f}")
         cmp_[scn] = {"worst_1min_sim_over_real": s["worst_1min_return"] / rc["worst_1min_return"],

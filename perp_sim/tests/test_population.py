@@ -96,7 +96,7 @@ class SwapTests(unittest.TestCase):
         cash = {}
         for n in (0, 10):
             pop = build_population(3, n_llm=n, llm_factory=inert_factory)
-            ex = Exchange(SimConfig(n_steps=5, seed=3), SCENARIOS["normal-thick-early"])
+            ex = Exchange(SimConfig(n_steps=5, seed=3), SCENARIOS["normal-thick-synthetic-no-event"])
             add_accounts(ex, pop)
             cash[n] = {a: acct.collateral for a, acct in ex.accounts.items()}
         self.assertEqual(cash[0], cash[10])
@@ -104,8 +104,8 @@ class SwapTests(unittest.TestCase):
 
 class BaselineBehaviourTests(unittest.TestCase):
     def test_traders_that_are_not_swapped_act_the_same_in_every_condition(self):
-        control, _ = run("stress-thin-early", 3, n_steps=1)
-        swapped, pop = run("stress-thin-early", 3, n_llm=10, n_steps=1, llm_factory=inert_factory)
+        control, _ = run("stress-thin-synthetic-no-event", 3, n_steps=1)
+        swapped, pop = run("stress-thin-synthetic-no-event", 3, n_llm=10, n_steps=1, llm_factory=inert_factory)
 
         def orders(exchange, keep):
             return sorted(o for o in exchange.order_log if o[1] in keep)
@@ -116,7 +116,7 @@ class BaselineBehaviourTests(unittest.TestCase):
 
     def test_noise_traders_send_small_heavy_tailed_balanced_orders(self):
         spec = PopulationSpec(m_traders=40, mix=(("noise", 1.0),))
-        exchange, _ = run("normal-thick-early", 1, spec=spec, n_steps=60)
+        exchange, _ = run("normal-thick-synthetic-no-event", 1, spec=spec, n_steps=60)
         sizes = sorted(o[3] for o in exchange.order_log)
         self.assertGreater(len(sizes), 200)
         median, mean = sizes[len(sizes) // 2], sum(sizes) / len(sizes)
@@ -132,8 +132,8 @@ class BaselineBehaviourTests(unittest.TestCase):
         self.assertEqual(kinds, {"noise", "trend", "contrarian", "value", "maker"})
 
     def test_control_is_reproducible(self):
-        a, _ = run("stress-thin-early", 5, n_steps=30)
-        b, _ = run("stress-thin-early", 5, n_steps=30)
+        a, _ = run("stress-thin-synthetic-no-event", 5, n_steps=30)
+        b, _ = run("stress-thin-synthetic-no-event", 5, n_steps=30)
         self.assertEqual([dataclasses.asdict(r) for r in a.records],
                          [dataclasses.asdict(r) for r in b.records])
 

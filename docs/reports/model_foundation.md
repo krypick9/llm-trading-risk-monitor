@@ -79,7 +79,9 @@ where λ (Kyle's lambda) measures how much a unit of signed order flow moves the
 
 ### 3.3 Historical Path Replay (Q2 Fix)
 
-**Choice**: For stress scenarios, replay real 1-minute BTC price paths instead of synthetic GBM with a parametric shock.
+**Choice**: Use a real 1-minute BTC price path as an illustrative stress replay, separate from synthetic-price scenarios.
+
+**Validation caveat**: The Oct 10 extreme path was selected after inspecting its drawdown and 1-minute move, so it is a known stress case rather than an untouched out-of-sample validation path. Use different unused dates for independent validation.
 
 **Rationale**: A daily drawdown of -13.15% does not happen in one minute. Applying it as a single-step jump creates an unrealistic ~100σ event that no book could absorb. Replaying the real intraday path preserves the temporal structure: the crash unfolds over hours, with 1-minute moves of -0.3% to -0.5%, punctuated by occasional larger moves (max observed: -7.19%).
 
@@ -138,7 +140,7 @@ We compute these statistics from real data (16-day training set):
 
 - **Volatility**: sigma_hourly (std of log returns × √60)
 - **Jump parameters**: rate, mean, std (detected via threshold method: |return| > 3σ)
-- **Microstructure**: spread (bps), depth (BTC within 0.5% of mid)
+- **Microstructure**: spread (bps), depth (BTC within the matched empirical band; current reference band ±0.10%)
 - **Distribution**: excess kurtosis (with and without zero returns)
 - **Temporal**: volatility clustering (ACF of squared returns), order flow autocorrelation
 - **Extreme**: max 1-minute return (NOT daily drawdown — Q2 fix)
@@ -146,7 +148,7 @@ We compute these statistics from real data (16-day training set):
 ### 4.3 Validation Strategy
 
 - **In-sample**: Stylized facts (fat tails, vol clustering, OFI autocorrelation) checked with 5 seeds
-- **Out-of-sample**: 8-day held-out period (Oct 10-21) compared against sim statistics
+- **Historical comparison**: the previously reported Oct 10-21 period is not a fully untouched out-of-sample set because Oct 10 influenced extreme-path selection; select an unused date range for a genuine held-out evaluation
 - **Microstructure**: Kyle's lambda, liquidity recovery time, cascade decay (this doc, Q6)
 - **Multi-seed**: All results reported as mean ± std across 5 seeds
 
@@ -154,7 +156,7 @@ We compute these statistics from real data (16-day training set):
 
 1. **Zero-return frequency**: The mini-market (50 agents) produces ~90% zero-return minutes vs ~2.5% in real data. This is because 50 agents don't trade every minute, while real markets have thousands. This inflates kurtosis (zero-inflated distribution) but does not change the sign or direction of stylized facts.
 
-2. **Spread mismatch**: The sim's effective spread is ~5× the real Bybit spread due to tick_size ($0.5 on a $100k price = 0.5 bps) being coarser than the real tick. This is a known limitation of mini-market tick granularity and does not affect cascade dynamics.
+2. **Spread/depth band audit**: The simulator now uses a $0.10 tick and ±0.10% near-depth band to match the checked-in Bybit reference-book definitions. Prior calibration used a $0.50 tick and 0.5% simulation band while the data file documented ±0.10%; old fit reports therefore need regeneration. Tick and depth-band differences can affect price impact and cascade dynamics; they cannot be assumed irrelevant.
 
 3. **Single-venue**: We model one exchange. Real cascades can spread across venues (cross-exchange contagion), which is beyond our current scope (Phase 2 candidate).
 
@@ -162,9 +164,9 @@ We compute these statistics from real data (16-day training set):
 
 ## 5. LLM Agent Integration (Phase 1 Transition)
 
-The scripted bots (CrowdBot, TrendBot, ContrarianBot, ValueBot, MakerBot) serve as a **baseline condition** for Phase 1 experiments. They follow fixed rules with no reasoning, no memory, and no market state awareness beyond the `MarketView` dataclass.
+The scripted bots (CrowdBot, TrendBot, ContrarianBot, ValueBot, MakerBot) are currently used for environment development and calibration. They are candidate scripted-policy controls, not validated human traders. In particular, CrowdBot deliberately creates crowded leveraged longs and must be treated as a stress-mechanism role rather than a neutral “normal trader.” The primary Phase 1 control and role mix are not yet implemented; see the synchronized plan and `risk_identification_strategy.md`.
 
-LLM agents will replace scripted bots using the **same interface** (`bot.act(view) -> list[OrderRequest]`), but with fundamentally different behavior:
+The planned Phase 1 experiment will replace scripted policies with role-matched LLM policies in fixed account slots, using the **same interface** (`bot.act(view) -> list[OrderRequest]`), but with fundamentally different decision mechanisms:
 - **Reasoning**: LLM can assess risk, adjust strategy, and refuse to trade
 - **Memory**: LLM retains context across steps (recent prices, own position history)
 - **Heterogeneity**: Each LLM call produces unique decisions (prompt + temperature)
