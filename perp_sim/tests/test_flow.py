@@ -111,7 +111,7 @@ class TestBackstopLP(unittest.TestCase):
     def test_full_population_with_flow_has_live_market(self):
         """End-to-end: reference population (NO NoiseBot) + background flow."""
         cfg = SimConfig(n_steps=300, seed=7, bg_flow_enabled=True,
-                        bg_flow_orders_per_min=40.0, bg_flow_btc_per_min=0.194)
+                        bg_flow_orders_per_min=80.0, bg_flow_btc_per_min=0.194)
         ex = Exchange(cfg, make_scenario())
         bots = build_reference_population(seed=7, n_total=50)
         for b in bots:

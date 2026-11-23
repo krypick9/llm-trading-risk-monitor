@@ -187,7 +187,7 @@ class MakerBot(Bot):
     behavior that keeps the maker from filling one-sidedly forever."""
     kind = "maker"
 
-    def __init__(self, account_id, seed, half_spread=None, size=0.2,
+    def __init__(self, account_id, seed, half_spread=None, size=0.005,
                  inventory_limit=1.0, half_spread_ticks=2.0, skew=0.5):
         super().__init__(account_id, seed, 1.0)
         self.half_spread = half_spread              # absolute fallback if the view has no tick

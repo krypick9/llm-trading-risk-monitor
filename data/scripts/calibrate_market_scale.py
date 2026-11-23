@@ -66,8 +66,8 @@ def main():
     # Count floor: scaling the trade COUNT by the same factor would leave
     # ~11% empty minutes from Poisson zeros alone (vs 3.76% real), and
     # few-but-large orders stall on one ladder level. Keep counts above
-    # ~40/min and let the volume target set the size scale.
-    orders_per_min = max(s * real["trades_per_min_median"], 40.0)
+    # ~80/min and let the volume target set the size scale.
+    orders_per_min = max(s * real["trades_per_min_median"], 80.0)
 
     # Thin scenarios use half the calibrated scale (the thick/thin factorial
     # contrast is preserved around the anchored value).

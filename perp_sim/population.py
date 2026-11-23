@@ -58,7 +58,10 @@ class PopulationSpec:
     # market makers
     maker_half_spread: tuple = (0.0001, 0.0005)   # PLACEHOLDER: absolute fallback (superseded below)
     maker_half_spread_ticks: tuple = (1.0, 2.5)   # real spread ~1 tick; participant quotes 1-2.5 ticks from mid
-    maker_size: tuple = (0.05, 0.3)           # PLACEHOLDER, BTC per quote
+    maker_size: tuple = (0.003, 0.010)        # anchored: thin top-of-book so flow can deplete it
+                                              # (median real trade 0.002 BTC; thick 0.2 BTC quotes
+                                              # made the touch ~1 BTC thick vs 0.194 BTC/min flow and
+                                              # left the last price unchanged for ~4-5 minutes)
     maker_inventory_limit: tuple = (0.5, 2.0) # PLACEHOLDER, BTC
 
 

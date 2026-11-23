@@ -53,7 +53,7 @@ class SimConfig:
     # data/scripts/calibrate_market_scale.py (one scale factor sets flow AND
     # depth). Anchors: Binance 547 trades/min, 48.5 BTC/min (normal regime).
     bg_flow_enabled: bool = False
-    bg_flow_orders_per_min: float = 40.0     # expected aggressive orders per minute
+    bg_flow_orders_per_min: float = 80.0     # expected aggressive orders per minute
     # NOTE: the count is deliberately HIGHER than the scale-scaled real count
     # (0.004 x 547 = 2.2/min) for two discretization reasons: Poisson zeros
     # alone would give ~11% empty minutes (real: 3.76%), and few-but-large
