@@ -178,21 +178,42 @@ class ValueBot(Bot):
 
 class MakerBot(Bot):
     """Posts a buy and a sell just either side of the middle every step, and
-    stops quoting the side it is already too heavy on."""
+    stops quoting the side it is already too heavy on.
+
+    Quotes sit `half_spread_ticks` ticks from the middle: the real BTCUSDT
+    spread is about one tick (0.009 bp measured, tick = 0.01 bp), while the
+    old absolute default (3 bp) was ~300x too wide. The side that would ADD
+    to inventory is widened by a skew factor, a minimal inventory-management
+    behavior that keeps the maker from filling one-sidedly forever."""
     kind = "maker"
 
-    def __init__(self, account_id, seed, half_spread=0.0003, size=0.2, inventory_limit=1.0):
+    def __init__(self, account_id, seed, half_spread=None, size=0.2,
+                 inventory_limit=1.0, half_spread_ticks=2.0, skew=0.5):
         super().__init__(account_id, seed, 1.0)
-        self.half_spread, self.size, self.inventory_limit = half_spread, size, inventory_limit
+        self.half_spread = half_spread              # absolute fallback if the view has no tick
+        self.half_spread_ticks = half_spread_ticks
+        self.skew = skew
+        self.size, self.inventory_limit = size, inventory_limit
+
+    def _half(self, view):
+        if getattr(view, "tick_size", None) and self.half_spread_ticks:
+            centre = view.mid or view.last_price
+            if centre > 0:
+                return view.tick_size * self.half_spread_ticks / centre  # ticks -> relative offset
+        return self.half_spread or 0.0003
 
     def decide(self, view):
         centre = view.mid or view.last_price
-        actions = [CancelAll(self.account_id)]
+        half = self._half(view)
         pos = view.own.position
+        inv_frac = pos / self.inventory_limit if self.inventory_limit else 0.0
+        buy_half = half * (1 + self.skew * max(0.0, inv_frac))
+        sell_half = half * (1 + self.skew * max(0.0, -inv_frac))
+        actions = [CancelAll(self.account_id)]
         if pos < self.inventory_limit:
-            actions.append(OrderRequest(self.account_id, BUY, self.size, price=centre * (1 - self.half_spread)))
+            actions.append(OrderRequest(self.account_id, BUY, self.size, price=centre * (1 - buy_half)))
         if pos > -self.inventory_limit:
-            actions.append(OrderRequest(self.account_id, SELL, self.size, price=centre * (1 + self.half_spread)))
+            actions.append(OrderRequest(self.account_id, SELL, self.size, price=centre * (1 + sell_half)))
         return actions
 
 

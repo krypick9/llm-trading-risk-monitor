@@ -22,6 +22,7 @@ from typing import Optional
 
 from .accounts import Account
 from .config import Scenario, SimConfig
+from .flow import BackgroundTakerFlow, FLOW_ID
 from .index_price import IndexPriceProcess, ReplayIndexPrice
 from .orderbook import BUY, EPS, SELL, Order, OrderBook
 from .records import StepRecord
@@ -78,6 +79,7 @@ class MarketView:
     open_interest: float
     liq_count_last_step: int
     liq_notional_last_step: float
+    tick_size: float = 0.1
     price_history: list = field(default_factory=list)   # recent last prices, oldest first
     own: Optional[OwnView] = None
 
@@ -111,6 +113,7 @@ class Exchange:
     def __init__(self, cfg: SimConfig, scenario: Scenario):
         self.cfg = cfg
         self.scenario = scenario
+        self.bg_flow = None
         # Separate random streams: the reference price path must be identical
         # for a given regime and seed regardless of the synthetic path label or
         # number of traders. Event/no-event scenarios share the same base path.
@@ -142,6 +145,10 @@ class Exchange:
         self.liquidation_log = []
         self._oid = 0
         self.add_account(BG_ID, collateral=1e12, max_leverage=1e9, liquidatable=False, background=True)
+        if cfg.bg_flow_enabled:
+            self.bg_flow = BackgroundTakerFlow(cfg, cfg.seed)
+            self.add_account(FLOW_ID, collateral=1e9, max_leverage=1e9,
+                             liquidatable=False, background=True)
 
     # ---- setup -------------------------------------------------------------
     def add_account(self, account_id, collateral=None, max_leverage=None,
@@ -227,6 +234,7 @@ class Exchange:
             open_interest=self._open_interest(),
             liq_count_last_step=self.last_liq_count,
             liq_notional_last_step=self.last_liq_notional,
+            tick_size=cfg.tick_size,
             price_history=self.price_history[-61:],
             own=own,
         )
@@ -263,6 +271,7 @@ class Exchange:
             if isinstance(action, CancelAll):
                 self.book.cancel_account(action.account_id)
         requests = [a for a in actions if isinstance(a, OrderRequest)]
+        requests += self._background_flow_orders(t)
         self.rng_arrival.shuffle(requests)          # nobody gets permanent first place
         for request in requests:
             self._handle_request(request, t, stats)
@@ -282,6 +291,19 @@ class Exchange:
         record = self._make_record(t, stats, events, settled, bg_factor, prev_last, prev_index)
         self.records.append(record)
         return record
+
+    # ---- background taker flow ----------------------------------------------------
+    def _background_flow_orders(self, t: int) -> list:
+        """The demand side: aggressive background orders that cross the spread.
+        They are shuffled into the same arrival order as participant orders, so
+        the flow is simultaneous with (not ahead of) the traders."""
+        if self.bg_flow is None:
+            return []
+        depth_bid, depth_ask = self.book.depth(self.cfg.depth_band)
+        pairs = self.bg_flow.orders_this_step(t, self.index_history,
+                                              self.scenario.sigma_hourly,
+                                              depth_bid, depth_ask)
+        return [OrderRequest(FLOW_ID, side, qty, price=None) for side, qty in pairs]
 
     # ---- orders ----------------------------------------------------------------
     def _floor_lot(self, qty: float) -> float:
@@ -370,6 +392,11 @@ class Exchange:
                 factor, widen = 0.3, 2.0
         centre = self.last_price + cfg.bg_anchor_strength * (self.index_price - self.last_price)
         half = s.bg_half_spread * widen
+        if cfg.bg_backstop_only:
+            bid, ask = self.book.best_bid(), self.book.best_ask()
+            if bid is not None and ask is not None:
+                mid = (bid + ask) / 2.0
+                half = max(half, (ask - bid) / (2.0 * mid) + cfg.bg_backstop_extra)
         size = self._floor_lot(s.bg_depth_btc * factor / cfg.bg_levels)
         if size >= cfg.lot_size:
             for i in range(cfg.bg_levels):

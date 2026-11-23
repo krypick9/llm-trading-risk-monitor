@@ -56,7 +56,8 @@ class PopulationSpec:
     contrarian_threshold: tuple = (0.002, 0.005)  # PLACEHOLDER
     value_threshold: tuple = (0.001, 0.003)   # PLACEHOLDER
     # market makers
-    maker_half_spread: tuple = (0.0001, 0.0005)   # PLACEHOLDER: 1 to 5 bp either side of the middle
+    maker_half_spread: tuple = (0.0001, 0.0005)   # PLACEHOLDER: absolute fallback (superseded below)
+    maker_half_spread_ticks: tuple = (1.0, 2.5)   # real spread ~1 tick; participant quotes 1-2.5 ticks from mid
     maker_size: tuple = (0.05, 0.3)           # PLACEHOLDER, BTC per quote
     maker_inventory_limit: tuple = (0.5, 2.0) # PLACEHOLDER, BTC
 
@@ -115,7 +116,8 @@ def _draw_params(kind: str, spec: PopulationSpec, rng: random.Random) -> dict:
         return dict(threshold=rng.uniform(*spec.value_threshold),
                     act_prob=rng.uniform(*spec.strategy_act_prob))
     if kind == "maker":
-        return dict(half_spread=rng.uniform(*spec.maker_half_spread),
+        return dict(half_spread=None,
+                    half_spread_ticks=rng.uniform(*spec.maker_half_spread_ticks),
                     size=rng.uniform(*spec.maker_size),
                     inventory_limit=rng.uniform(*spec.maker_inventory_limit))
     raise ValueError(f"unknown trader type: {kind}")
@@ -161,7 +163,8 @@ def make_normal_bot(slot: Slot, seed: int):
         return ValueBot(a, seed, leverage=slot.leverage, threshold=p["threshold"],
                         act_prob=p["act_prob"])
     if slot.kind == "maker":
-        return MakerBot(a, seed, half_spread=p["half_spread"], size=p["size"],
+        return MakerBot(a, seed, half_spread=p["half_spread"],
+                        half_spread_ticks=p["half_spread_ticks"], size=p["size"],
                         inventory_limit=p["inventory_limit"])
     raise ValueError(f"unknown trader type: {slot.kind}")
 

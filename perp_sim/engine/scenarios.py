@@ -32,7 +32,11 @@ _REGIMES = {
     ),
 }
 
-_DEPTH_BTC = {"thick": 8.0, "thin": 4.0}
+# Near-depth per side, derived from the unified market scale
+# (data/scripts/calibrate_market_scale.py, default s = 0.004 applied to the
+# real +-0.10% near-depth of ~123 BTC/side). Depth and background flow volume
+# now share ONE scale factor so normalized impact is inherited, not accidental.
+_DEPTH_BTC = {"thick": 0.5, "thin": 0.25}
 _PATHS = {
     "synthetic-no-event": (None, False, ""),
     "synthetic-event": (0.5, False, ""),
