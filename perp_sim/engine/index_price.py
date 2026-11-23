@@ -36,11 +36,25 @@ class IndexPriceProcess:
         self.rng = rng
         self.price = cfg.initial_price
         self.shock_step = scenario.shock_step(cfg.n_steps)
+        # time-varying log-volatility (AR(1) around the regime sigma)
+        self.log_sigma = math.log(scenario.sigma_hourly) if scenario.sigma_hourly > 0 else 0.0
+        self._sigma0 = self.log_sigma
 
     def next(self, step: int) -> float:
         s, dt = self.scenario, self.cfg.hours_per_step
-        log_return = -0.5 * s.sigma_hourly ** 2 * dt \
-            + s.sigma_hourly * math.sqrt(dt) * self.rng.gauss(0.0, 1.0)
+        if self.cfg.index_vol_clustering:
+            self.log_sigma = ((1.0 - self.cfg.sigma_ar_phi) * self._sigma0
+                              + self.cfg.sigma_ar_phi * self.log_sigma
+                              + self.cfg.sigma_ar_eta * self.rng.gauss(0.0, 1.0))
+            # bound volatility to [1/e, e] x regime sigma: a high-persistence
+            # AR(1) is otherwise an unbounded random walk and can explode
+            self.log_sigma = max(self._sigma0 - 2.0,
+                                 min(self._sigma0 + 2.0, self.log_sigma))
+            sigma = math.exp(self.log_sigma)
+        else:
+            sigma = s.sigma_hourly
+        log_return = -0.5 * sigma ** 2 * dt \
+            + sigma * math.sqrt(dt) * self.rng.gauss(0.0, 1.0)
         if self.rng.random() < s.jump_rate_per_hour * dt:
             log_return += self.rng.gauss(s.jump_mean, s.jump_std)
         if self.shock_step is not None and step == self.shock_step:

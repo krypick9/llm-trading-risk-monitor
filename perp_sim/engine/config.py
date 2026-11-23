@@ -91,6 +91,16 @@ class SimConfig:
     # push the price beyond the band, breaking the cascade feedback loop.
     # Phase 1: disabled (circuit_breaker_enabled=False) to observe unmitigated cascades.
     # Phase 2: enabled to test intervention effectiveness.
+    # ---- index volatility clustering (log-vol AR(1)) -----------------------
+    # A constant sigma cannot produce volatility clustering (real BTC 1-min
+    # squared-return ACF1 ~ 0.27); the reference data were fit on vol/jumps/
+    # kurtosis only, so this structural gap went unmeasured until the ACF
+    # label bug was fixed. When enabled, log-volatility follows a mean-
+    # reverting AR(1): large moves keep sigma elevated for a while, quiet
+    # periods stay quiet. Calibrate (phi, eta) to the training-day ACF/kurtosis.
+    index_vol_clustering: bool = False
+    sigma_ar_phi: float = 0.95      # persistence of log-volatility, per step [grid-fit on training seeds, log-vol clamped to +-2.0]
+    sigma_ar_eta: float = 0.3       # per-step innovation to log-volatility [grid-fit]
     circuit_breaker_enabled: bool = False
     circuit_breaker_pct: float = 0.05   # 5% deviation triggers the breaker
     circuit_breaker_cooldown_steps: int = 10  # how long the breaker stays active
