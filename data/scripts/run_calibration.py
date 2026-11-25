@@ -250,7 +250,7 @@ def calibrate_regime(targets, regime, quick=False):
     seeds = CALIB_SEEDS[:1] if quick else CALIB_SEEDS
 
     if quick:
-        sigma_grid = [target["sigma_hourly"]*0.6S]
+        sigma_grid = [target["sigma_hourly"]*0.6]
         depth_grid = [0.25, 0.5, 1.0, 2.0]
         spread_grid = [real_spread * 0.5]
 
