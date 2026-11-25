@@ -181,8 +181,11 @@ def compute_sim_stats(exchange, cfg):
     n_zero = int(np.sum(returns == 0))
     zero_pct = n_zero / len(returns) * 100 if len(returns) > 0 else 0
 
-    # Vol clustering ACF
-    vol_acf1 = autocorrelation(returns ** 2, 1)
+    # Vol clustering ACF, computed on BOTH series explicitly.
+    # Bug fix: the old code logged the INDEX squared-return ACF under the
+    # local ("exchange_") label, so local clustering was never actually measured.
+    vol_acf1 = autocorrelation(returns ** 2, 1)          # index clustering
+    exchange_vol_acf1 = autocorrelation(exchange_returns ** 2, 1)  # local clustering
     exchange_sigma = float(np.std(exchange_returns) * math.sqrt(60))
     exchange_std = np.std(exchange_returns)
     exchange_jumps = (exchange_returns[np.abs(exchange_returns) > 3 * exchange_std]
@@ -204,7 +207,7 @@ def compute_sim_stats(exchange, cfg):
                                       if len(exchange_returns) else 0.0),
         "exchange_return_kurtosis": excess_kurtosis(exchange_returns),
         "exchange_return_kurtosis_without_zeros": excess_kurtosis(exchange_returns_nonzero),
-        "exchange_vol_acf1": vol_acf1,
+        "exchange_vol_acf1": exchange_vol_acf1,
         "exchange_worst_1min_return": float(np.min(exchange_returns)) if len(exchange_returns) else 0.0,
         "exchange_jump_rate_per_hour": float(len(exchange_jumps) / (len(exchange_returns) / 60))
         if len(exchange_returns) else 0.0,

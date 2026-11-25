@@ -44,8 +44,37 @@ class SimConfig:
     #     Provisional candidates only; ladder shape still needs empirical fitting.
     bg_anchor_strength: float = 0.8
     bg_levels: int = 5                # how many price levels it quotes per side
-    bg_level_gap: float = 0.003       # 0.30% spacing; preserve baseline pending full ladder re-fit
+    bg_level_gap: float = 0.0002      # 0.02% spacing: 5 levels now span the +-0.10% near-depth band
     bg_walkaway_threshold: float = 0.01  # retreat threshold over the 5-step lookback
+
+    # ---- background taker flow (the demand side; see engine/flow.py) ------
+    # The LP only supplies resting quotes; the local last price moves only on
+    # fills, so the market needs a source of aggressive orders. Calibrate via
+    # data/scripts/calibrate_market_scale.py (one scale factor sets flow AND
+    # depth). Anchors: Binance 547 trades/min, 48.5 BTC/min (normal regime).
+    bg_flow_enabled: bool = False
+    bg_flow_orders_per_min: float = 80.0     # expected aggressive orders per minute
+    # NOTE: the count is deliberately HIGHER than the scale-scaled real count
+    # (0.004 x 547 = 2.2/min) for two discretization reasons: Poisson zeros
+    # alone would give ~11% empty minutes (real: 3.76%), and few-but-large
+    # orders stall on one ladder level, leaving the last price unchanged for
+    # whole minutes even while volume trades. The volume target
+    # (bg_flow_btc_per_min) keeps the anchored per-minute volume; the higher
+    # count only granularizes it.
+    bg_flow_btc_per_min: float | None = 0.194  # volume target; renormalizes drawn sizes
+    bg_flow_size_median_btc: float = 0.002   # real median trade (2 lots)
+    bg_flow_size_sigma: float = 2.5          # heavy-tail spread of sizes
+    bg_flow_max_size_btc: float = 0.5
+    bg_flow_inventory_cap_btc: float = 5.0   # flow trades to reduce beyond this
+    bg_flow_vol_excitement: float = 2.0      # rate multiplier at 1x a normal 5-min move
+    bg_flow_imbalance_skew: float = 0.15     # flow leans to the thinner book side
+
+    # ---- backstop behaviour of the background LP --------------------------
+    # When participant makers quote, the LP ladder starts BEYOND their best
+    # quotes (by bg_backstop_extra) instead of overlapping them, so measured
+    # spread/depth come from participant makers with the LP as a backstop.
+    bg_backstop_only: bool = False
+    bg_backstop_extra: float = 0.0002
 
     # ---- measurement -------------------------------------------------------
     depth_band: float = 0.001         # Bybit near-depth uses a ±0.10% band
@@ -62,6 +91,16 @@ class SimConfig:
     # push the price beyond the band, breaking the cascade feedback loop.
     # Phase 1: disabled (circuit_breaker_enabled=False) to observe unmitigated cascades.
     # Phase 2: enabled to test intervention effectiveness.
+    # ---- index volatility clustering (log-vol AR(1)) -----------------------
+    # A constant sigma cannot produce volatility clustering (real BTC 1-min
+    # squared-return ACF1 ~ 0.27); the reference data were fit on vol/jumps/
+    # kurtosis only, so this structural gap went unmeasured until the ACF
+    # label bug was fixed. When enabled, log-volatility follows a mean-
+    # reverting AR(1): large moves keep sigma elevated for a while, quiet
+    # periods stay quiet. Calibrate (phi, eta) to the training-day ACF/kurtosis.
+    index_vol_clustering: bool = False
+    sigma_ar_phi: float = 0.95      # persistence of log-volatility, per step [grid-fit on training seeds, log-vol clamped to +-2.0]
+    sigma_ar_eta: float = 0.3       # per-step innovation to log-volatility [grid-fit]
     circuit_breaker_enabled: bool = False
     circuit_breaker_pct: float = 0.05   # 5% deviation triggers the breaker
     circuit_breaker_cooldown_steps: int = 10  # how long the breaker stays active
