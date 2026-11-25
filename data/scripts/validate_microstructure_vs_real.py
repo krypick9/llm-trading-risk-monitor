@@ -126,7 +126,7 @@ def real_crash(d):
 
 # ---------------------------------------------------------------- simulator
 def run_sim(name, seed):
-    cfg = SimConfig(n_steps=N_STEPS, step_minutes=1.0, seed=seed, initial_collateral=1000.0)
+    cfg = SimConfig(n_steps=N_STEPS, step_minutes=1.0, seed=seed, initial_collateral=1000.0, bg_flow_enabled=True, bg_backstop_only=True)
     ex = Exchange(cfg, SCENARIOS[name])
     pop = make_crowd(seed, n_total=50)
     open_accounts(ex, pop)

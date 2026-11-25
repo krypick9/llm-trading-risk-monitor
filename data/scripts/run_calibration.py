@@ -88,7 +88,7 @@ def autocorrelation(x, lag=1):
 
 # Mini-market depth grid (in BTC, per side)
 # Real Bybit near_depth ~109 BTC; mini-market scaled for 50 agents
-MINI_MARKET_DEPTH_GRID = [1.0, 1.5, 2.0, 4.0, 8.0, 16.0]
+MINI_MARKET_DEPTH_GRID = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0]
 USE_CROWD_CALIBRATION = False
 
 # Seeds for multi-seed calibration (Q6 fix)
@@ -105,6 +105,10 @@ def run_one(scenario, seed=42, n_steps=600, n_bots=50):
         total_trader_collateral_budget=n_bots * 1000.0,
         maintenance_margin_rate=0.01,
         funding_cap_per_hour=1.25e-05,
+        bg_flow_enabled=True,
+        bg_backstop_only=True,
+        bg_flow_orders_per_min=2.2, 
+        index_vol_clustering=True
     )
 
     exchange = Exchange(cfg, scenario)
@@ -233,7 +237,7 @@ def calibrate_regime(targets, regime, quick=False):
     print(f"    shock_1min:      {target.get('shock_return_1min', target.get('shock_return', 0)):.6f}")
 
     # --- Sigma grid ---
-    sigma_grid = [target["sigma_hourly"] * f for f in [0.5, 0.75, 1.0, 1.25, 1.5]]
+    sigma_grid = [target["sigma_hourly"] * f for f in [0.4, 0.5, 0.6, 0.7, 0.8]]
     # --- Depth grid (mini-market) ---
     depth_grid = MINI_MARKET_DEPTH_GRID
 
@@ -246,9 +250,9 @@ def calibrate_regime(targets, regime, quick=False):
     seeds = CALIB_SEEDS[:1] if quick else CALIB_SEEDS
 
     if quick:
-        sigma_grid = [target["sigma_hourly"]]
-        depth_grid = [2.0, 4.0]
-        spread_grid = [real_spread]
+        sigma_grid = [target["sigma_hourly"]*0.6S]
+        depth_grid = [0.25, 0.5, 1.0, 2.0]
+        spread_grid = [real_spread * 0.5]
 
     n_combos = len(sigma_grid) * len(depth_grid) * len(spread_grid)
     print(f"  Testing {n_combos} combos × {len(seeds)} seeds = {n_combos * len(seeds)} runs...")

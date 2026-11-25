@@ -228,6 +228,8 @@ def run_one(scenario_name, seed, n_steps, n_bots):
         step_minutes=1.0,
         seed=seed,
         initial_collateral=1000.0,
+        bg_flow_enabled=True,
+        bg_backstop_only=True,
     )
 
     exchange = Exchange(cfg, scenario)
