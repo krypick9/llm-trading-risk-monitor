@@ -416,6 +416,109 @@ class CascadeAmplificationTests(unittest.TestCase):
                         f"forced selling did not move the price: {on:.2f}% vs {off:.2f}%")
 
 
+# ---- trader behaviour and the leverage response --------------------------
+class RebalanceModeTests(unittest.TestCase):
+    """Whether a trader can be liquidated at moderate leverage is decided by what
+    it does AFTER building its position, not by the leverage number."""
+
+    def _drive(self, trader, prices):
+        """Run a trader through a falling market and return its positions."""
+        from tests.test_population import _fake_view_sequence
+        from engine import OwnView
+
+        views = _fake_view_sequence(trader.account_id, n=len(prices))
+        positions, position, collateral, entry = [], 0.0, 1000.0, 0.0
+        for view, price in zip(views, prices):
+            view.index_price = view.last_price = view.mark_price = price
+            view.best_bid, view.best_ask, view.mid = price - 0.1, price + 0.1, price
+            equity = collateral + (position * (price - entry) if position else 0.0)
+            view.own = OwnView(account_id=trader.account_id, collateral=collateral,
+                               equity=equity, position=position, entry_price=entry,
+                               leverage=(abs(position) * price / equity) if equity > 0 else 0.0,
+                               margin_buffer=None, liquidation_price=None, open_orders=0)
+            for action in trader.act(view):
+                filled = action.side * action.qty
+                if position == 0:
+                    entry = price
+                position += filled
+            positions.append(position)
+        return positions
+
+    def test_hold_mode_does_not_sell_into_a_loss(self):
+        """The fix. A held position keeps its size as the price falls, so
+        leverage RISES and the trader walks into its own liquidation."""
+        from agents import PositionTaker
+        trader = PositionTaker("t00", 1, target_leverage=10.0, act_prob=1.0,
+                               direction=1, rebalance="hold")
+        falling = [100_000.0 * (1 - 0.0008 * i) for i in range(60)]
+        positions = self._drive(trader, falling)
+        peak = max(positions)
+        self.assertGreater(peak, 0.0, "the trader never built a position")
+        self.assertAlmostEqual(positions[-1], peak, places=6,
+                               msg="a holding trader must not shrink its position")
+
+    def test_constant_leverage_mode_sells_into_a_loss(self):
+        """The old behaviour, kept as an option and documented. It is a
+        volatility-targeting strategy: it self-deleverages, which is why it gave
+        0 liquidations at 2x, 5x and 10x."""
+        from agents import PositionTaker
+        trader = PositionTaker("t00", 1, target_leverage=10.0, act_prob=1.0,
+                               direction=1, rebalance="constant_leverage")
+        falling = [100_000.0 * (1 - 0.0008 * i) for i in range(60)]
+        positions = self._drive(trader, falling)
+        self.assertLess(positions[-1], max(positions),
+                        "constant-leverage traders must deleverage as they lose")
+
+    def test_an_unknown_rebalance_mode_is_rejected(self):
+        from agents import PositionTaker
+        with self.assertRaises(ValueError):
+            PositionTaker("t00", 1, rebalance="whatever")
+
+
+class LeverageDispersionTests(unittest.TestCase):
+    """A crowd on one leverage has one liquidation threshold, so the risk metric
+    can only answer all-or-nothing."""
+
+    def test_leverage_is_dispersed_by_default(self):
+        from population import PopulationSpec, make_slots
+        levs = [s.leverage for s in make_slots(0, PopulationSpec(target_leverage=5.0))]
+        self.assertGreater(len(set(levs)), 10, "leverage must vary across the crowd")
+        self.assertGreater(max(levs), 2 * min(levs))
+
+    def test_zero_sigma_reproduces_a_uniform_crowd(self):
+        from population import PopulationSpec, make_slots
+        spec = PopulationSpec(target_leverage=7.0, leverage_sigma=0.0)
+        self.assertEqual({s.leverage for s in make_slots(0, spec)}, {7.0})
+
+    def test_drawn_leverage_stays_inside_the_allowed_range(self):
+        from population import PopulationSpec, make_slots
+        spec = PopulationSpec(target_leverage=15.0, leverage_sigma=1.5,
+                              leverage_min=1.0, leverage_max=20.0)
+        for slot in make_slots(0, spec):
+            self.assertGreaterEqual(slot.leverage, 1.0)
+            self.assertLessEqual(slot.leverage, 20.0)
+
+    def test_the_default_cap_does_not_exceed_the_exchange_cap(self):
+        from population import PopulationSpec
+        self.assertLessEqual(PopulationSpec().leverage_max, SimConfig().max_leverage)
+
+    def test_raising_median_leverage_liquidates_more_accounts(self):
+        """The power check as an assertion: the risk metric must respond at
+        moderate leverage, not only at the extreme. Before this commit the
+        distinct-accounts count was 0 at 5x AND at 10x."""
+        from population import PopulationSpec
+        from run import run as run_sim
+
+        def accounts(lev):
+            ex, _ = run_sim("stress", 600, seed=0,
+                            spec=PopulationSpec(target_leverage=float(lev), long_bias=0.7))
+            return len({e.account for e in ex.liquidation_log})
+
+        low, high = accounts(5), accounts(10)
+        self.assertGreater(high, low)
+        self.assertGreater(high, 0)
+
+
 # ---- reproducibility and the replay path ---------------------------------
 class ReproducibilityTests(unittest.TestCase):
     def run_once(self, seed, idle=0):

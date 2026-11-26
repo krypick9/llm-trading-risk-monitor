@@ -11,9 +11,11 @@ cheap, honest checks:
      direction/sign checks, not "match real BTC to within X%".
 
   B. Power check (the important one): sweep leverage with ONLY scripted traders
-     and confirm liquidations respond monotonically and detectably. If the
-     instrument can't register a known perturbation, it can't register an agent
-     effect either -- so this must pass before any Phase-1 agent experiment.
+     and confirm liquidations respond monotonically and ACROSS A USABLE RANGE.
+     If the instrument can't register a known perturbation, it can't register an
+     agent effect either -- so this must pass before any Phase-1 agent
+     experiment. It counts distinct accounts liquidated, not raw liquidation
+     events, which double-count one trader liquidated repeatedly.
 
 Run:  python sanity.py
 """
@@ -78,23 +80,48 @@ def stylized_facts(seeds=(0, 1, 2, 3, 4), scenario="normal", steps=600):
     return k > 3 and a > 0 and sl > 0
 
 
-def power_check(levs=(2, 5, 10, 20), seeds=(0, 1, 2), scenario="stress", steps=600):
+def power_check(levs=(2, 3, 5, 8, 10, 15, 20), seeds=(0, 1, 2),
+                scenario="stress", steps=600, min_responding=4):
+    """Does the risk metric respond to a known perturbation, across a USABLE range?
+
+    Two changes from the first version of this check. It counts DISTINCT
+    ACCOUNTS liquidated rather than raw liquidation events, because one trader
+    that rebuilds and is liquidated again inflates the raw count without any
+    extra risk having occurred. And it requires the metric to respond at several
+    leverage levels, not just at the extreme: a check that only fires at 20x
+    tells you the instrument works somewhere, not that it can see an agent
+    effect at a leverage anyone would run.
+    """
     from population import PopulationSpec
-    print("\nB. POWER CHECK (stress, scripted only): do liquidations respond to leverage?")
+    print(f"\nB. POWER CHECK ({scenario}, scripted only): "
+          f"does risk respond to leverage?")
+    print(f"   {'median lev':>10} {'accts liq':>9} {'liq steps':>9} "
+          f"{'max/step':>8} {'bad debt':>10}")
     out = []
     for lev in levs:
         spec = PopulationSpec(target_leverage=float(lev), long_bias=0.7)
-        total = 0
+        accts = steps_liq = max_step = bad = 0.0
         for s in seeds:
             ex, _ = run(scenario, steps, seed=s, spec=spec)
-            total += summarize(ex)["liquidations"]
-        avg = total / len(seeds)
-        out.append((lev, avg))
-        print(f"   leverage {lev:>2}x -> {avg:7.1f} liquidations/run (avg of {len(seeds)} seeds)")
+            accts += len({e.account for e in ex.liquidation_log}) / len(seeds)
+            steps_liq += sum(1 for r in ex.records if r.liq_count) / len(seeds)
+            max_step += max((r.liq_count for r in ex.records), default=0) / len(seeds)
+            bad += ex.bad_debt / len(seeds)
+        out.append((lev, accts))
+        print(f"   {lev:>10} {accts:>9.1f} {steps_liq:>9.1f} {max_step:>8.1f} {bad:>10.0f}")
+
     monotone = all(out[i][1] <= out[i + 1][1] + 1e-9 for i in range(len(out) - 1))
-    detectable = out[-1][1] > out[0][1]
-    ok = monotone and detectable
-    print(f"   monotone in leverage: {monotone} ; detectable change: {detectable} -> {'PASS' if ok else 'FAIL'}")
+    responding = sum(1 for _, a in out if a > 0)
+    graded = responding >= min_responding
+    ok = monotone and graded and out[-1][1] > out[0][1]
+    print(f"   monotone: {monotone} ; levels with liquidations: "
+          f"{responding}/{len(out)} (need >= {min_responding}) -> "
+          f"{'PASS' if ok else 'FAIL'}")
+    if not graded:
+        print("   A metric that only fires at extreme leverage cannot show an "
+              "agent effect at\n   a leverage anyone would run. Widen the "
+              "leverage spread, deepen the stress\n   path, or thin near depth "
+              "before Phase 1.")
     return ok
 
 

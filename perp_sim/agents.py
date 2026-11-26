@@ -30,11 +30,26 @@ class PositionTaker:
     """A leveraged directional trader.
 
     Each agent holds a persistent direction (drawn at construction; `long_bias`
-    sets the share that are long) and ramps toward `target_leverage`, then holds.
-    Because it is leveraged it can be force-closed on an adverse move -- a drop
-    liquidates the longs, which is the baseline cascade setup. With long_bias=0.5
-    the crowd is balanced; raise it to create crowded longs, raise target_leverage
-    to make the crowd fragile (both are the knobs the power check sweeps).
+    sets the share that are long) and builds toward `target_leverage`. Because it
+    is leveraged it can be force-closed on an adverse move -- a drop liquidates
+    the longs, which is the baseline cascade setup.
+
+    `rebalance` decides what happens AFTER the position is built, and it decides
+    whether the trader can ever be liquidated at moderate leverage:
+
+      "hold" (default) -- size the position once, from starting equity, then hold
+          that many BTC. As the price falls, equity falls and leverage RISES, so
+          the trader walks into its own liquidation. This is ordinary leveraged
+          retail behaviour and it is what a cascade is made of.
+
+      "constant_leverage" -- re-target `leverage x equity / mark` on every act,
+          which means SELLING into a loss to restore the target. That is a
+          volatility-targeting strategy: it self-deleverages and is almost
+          impossible to liquidate. With it, liquidations were 0 at 2x, 5x and 10x
+          and only appeared at 20x, where the 4% margin buffer is thin enough
+          that a fast move lands before the trader can rebalance. Kept because
+          "do self-deleveraging traders cascade?" is a real Phase-2 question --
+          but it is the wrong baseline.
 
     `momentum` adds a trend tilt so positions can also build endogenously from
     price moves rather than only from the fixed bias.
@@ -43,7 +58,8 @@ class PositionTaker:
     kind = "position_taker"
 
     def __init__(self, account_id, seed, target_leverage=5.0, act_prob=0.4,
-                 direction=1, momentum=0.0, lookback=10, slip=0.003):
+                 direction=1, momentum=0.0, lookback=10, slip=0.003,
+                 rebalance="hold", ramp_steps=5):
         self.account_id = account_id
         self.rng = random.Random(f"{seed}|agent|{account_id}")
         self.target_leverage = target_leverage
@@ -52,11 +68,13 @@ class PositionTaker:
         self.momentum = momentum            # 0 = pure bias; >0 = add a trend tilt
         self.lookback = lookback
         self.slip = slip
+        if rebalance not in ("hold", "constant_leverage"):
+            raise ValueError(f"unknown rebalance mode {rebalance!r}")
+        self.rebalance = rebalance
+        self.ramp_steps = max(1, ramp_steps)
+        self.target_btc = None              # fixed once, in "hold" mode
 
-    def act(self, view):
-        if self.rng.random() > self.act_prob:
-            return []
-        own = view.own
+    def _sign(self, view):
         sign = self.direction
         if self.momentum > 0:
             hist = view.price_history
@@ -64,7 +82,28 @@ class PositionTaker:
                 signal = math.log(hist[-1] / hist[-1 - self.lookback])
                 if abs(signal) > 0:
                     sign = 1 if (self.direction + self.momentum * (1 if signal > 0 else -1)) >= 0 else -1
-        target = sign * self.target_leverage * max(own.equity, 0.0) / view.mark_price
+        return sign
+
+    def act(self, view):
+        if self.rng.random() > self.act_prob:
+            return []
+        own = view.own
+        sign = self._sign(view)
+
+        if self.rebalance == "constant_leverage":
+            target = sign * self.target_leverage * max(own.equity, 0.0) / view.mark_price
+        else:
+            # size once from starting equity, then hold that many BTC
+            if self.target_btc is None:
+                self.target_btc = self.target_leverage * max(own.equity, 0.0) / view.mark_price
+            ramped = self.target_btc * min(1.0, view.step / self.ramp_steps)
+            target = sign * ramped
+            # holding means not topping up a position the market has shrunk for
+            # us, and not selling into a loss either -- only build, and only
+            # close when the direction flips
+            if sign * own.position > sign * target:
+                return []
+
         delta = target - own.position
         if abs(delta) < MIN_TRADE:
             return []
