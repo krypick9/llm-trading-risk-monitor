@@ -468,6 +468,90 @@ best volume dispersion, with near depth coming from the LP ladder behind.
 
 `maker_share=0` reproduces the taker-only market for comparison.
 
+## Which parameters are actually grounded
+
+An audit of all ~49 parameters that change how the market behaves:
+
+| Category | Count | Examples |
+|---|---|---|
+| Measured from real data | ~17 | tick and lot size, fees, funding interval and cap, index volatility and jumps, median trade size, size dispersion (from the real 44.4 mean/median), volume, near depth, the replay paths |
+| Chosen by sweeping against a real target | ~11 | ladder growth and decay, LP inventory limit, max order size, maker quote size and withdrawal threshold, half-spread |
+| Arbitrary but fixed | ~17 | `bg_anchor_strength`, the leverage distribution, `act_prob`, maker skew and widen factor, the synthetic stress shock |
+
+The third group is not a defect peculiar to this model — some of it is
+unobservable in principle. Per-account leverage is not in any public feed, so
+`target_leverage` and `leverage_sigma` cannot be calibrated at all, only
+assumed and tested. What matters is that the three groups are now *labelled*.
+Phase 0's failure was not having invented numbers; it was that invented numbers
+lived in a file called `calibrated_scenarios.py`.
+
+### The deletion test
+
+A dial you can delete beats a dial you can defend, so each candidate was set to
+its null and measured against the seed-to-seed spread of the baseline.
+
+| Dial | Result |
+|---|---|
+| `bg_flow_imbalance_skew` | **Deleted.** Nothing moved, at 24 paired seeds. The flow no longer reads the book at all. |
+| `MIN_TRADE` | **Deleted.** A free-standing 0.002 that measured identically to 0.001 — it was the lot size written twice. Now `MIN_TRADE_LOTS = 2`, derived from the exchange. |
+| `collateral`, `maker_quote_size` | **Derived, not deleted.** 50×$1000, 25×$2000 and 100×$500 give the same share of traders liquidated (37.1 / 37.5 / 37.1%), so total capital is the dial. Touch depth likewise: a per-maker quote meant doubling the population doubled the depth at the touch and pinned the price. Both are now invariant to head count. |
+| `vol_cluster_rho` / `vov` | **Kept, for a different reason than it had.** See below. |
+| `bg_flow_vol_excitement` | **Kept.** Removing it moves volume dispersion, the volume/volatility link and volatility itself. |
+
+**The one I got wrong, and how.** An 8-seed unpaired test said the index
+volatility regime could go: nothing moved. A 24-seed *paired* test said
+otherwise — flat minutes 4.9% → 2.9% (t = −5.9) and volume dispersion
+1.01 → 0.94 (t = −5.5, real ≈ 1.0). It is load-bearing. But not for what it is
+named after: volatility clustering is statistically unchanged without it
+(0.335 → 0.343, t = 0.31), because that comes from the order flow. What it
+actually drives is volume dispersion, through the flow's excitement modulator.
+Kept, and re-documented.
+
+Two dials removed, two made scale-invariant, one wrongly condemned and
+reprieved. Behaviour is unchanged at 24 paired seeds.
+
+### A dead dial found on the way
+
+`momentum` did nothing for any value at or below 1. The sign only flipped when
+`direction + momentum × trend` crossed zero, so at 0.6 a long stayed long
+whatever the trend, and at exactly 1.0 it flipped shorts but not longs — while
+the comment said "0 = fixed-direction; >0 adds a trend tilt". A sensitivity
+sweep using momentum = 0.6 returned an effect of **exactly zero in all 25
+cells**, which is how it surfaced. It is now the probability of following the
+trend on any given action, which is graded and symmetric.
+
+## Choosing the outcome metric: the thing that decides whether Phase 1 is affordable
+
+Measured on a stand-in treatment (a trend-chasing crowd against a plain one),
+paired over 20 seeds, stress scenario:
+
+| Metric | effect | t | seeds needed for a 10% relative effect |
+|---|---|---|---|
+| max drawdown | +0.75 | 3.28 | **18** |
+| mean margin buffer | +1.32 | 17.30 | **26** |
+| peak share of OI near liquidation | +23.9 | 10.72 | 53 |
+| mean share of OI near liquidation | +24.6 | 15.15 | 82 |
+| steps with liquidations | −3.70 | −4.95 | 358 |
+| bad debt per trader | −38.5 | −5.59 | 815 |
+| **share of traders liquidated** | −2.50 | −0.41 | **1006** |
+
+Share-liquidated — the metric this project has been built around — is the worst
+one available. It is a rare threshold crossing, so it is bimodal: across seeds
+the treated arm ranges from 0% to 97.5%. The continuous pre-liquidation
+measures are observed every minute and are 20–50× cheaper to resolve.
+
+**The signs disagree**, and that is not a rounding issue. Under the same
+treatment, trend-chasing traders spend much more time near liquidation (+24.6
+pp, highly significant) and suffer *less* bad debt (−38.5) and fewer
+liquidation minutes (−3.7). Both are real. "Does risk go up?" has no single
+answer; it depends on which risk is named. **Pre-register the metric**, or the
+result can be chosen after the fact.
+
+A warning from the same exercise: an underpowered sweep at 6 seeds showed four
+of eight parameters flipping the sign of the treatment effect. At 20 paired
+seeds all of it was noise, and the headline effect itself was not significant
+(−2.5 pp, t = −0.41). Six seeds is not enough to conclude anything here.
+
 ### Reach sets the maximum representable cascade depth
 
 The dip floor tracks the ladder's reach almost exactly (stress, 20×, 3 seeds):

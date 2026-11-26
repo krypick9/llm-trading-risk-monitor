@@ -294,15 +294,15 @@ class FlowTests(unittest.TestCase):
         b = BackgroundTakerFlow(SimConfig(), 11)
         hist = [100_000.0] * 10
         for t in range(1, 20):
-            self.assertEqual(a.orders_this_step(t, hist, 0.0026, 0.5, 0.5),
-                             b.orders_this_step(t, hist, 0.0026, 0.5, 0.5))
+            self.assertEqual(a.orders_this_step(t, hist, 0.0026),
+                             b.orders_this_step(t, hist, 0.0026))
 
     def test_flow_inventory_stays_bounded(self):
         cfg = SimConfig()
         flow = BackgroundTakerFlow(cfg, 2)
         hist = [100_000.0] * 10
         for t in range(1, 400):
-            flow.orders_this_step(t, hist, 0.0026, 0.5, 0.5)
+            flow.orders_this_step(t, hist, 0.0026)
         self.assertLess(abs(flow.inventory_btc),
                         cfg.bg_flow_inventory_cap_btc + cfg.bg_flow_max_size_btc + 1e-9)
 
@@ -331,7 +331,7 @@ class FlowTests(unittest.TestCase):
         def volume(cfg):
             flow = BackgroundTakerFlow(cfg, 3)
             return sum(qty for t in range(1, 300)
-                       for _, qty in flow.orders_this_step(t, hist, 0.0026, 0.5, 0.5))
+                       for _, qty in flow.orders_this_step(t, hist, 0.0026))
 
         self.assertGreater(volume(cfg_high), 2.0 * volume(cfg_low))
 
@@ -355,7 +355,7 @@ class FlowTests(unittest.TestCase):
         def volume(history):
             f = BackgroundTakerFlow(cfg, 5)
             return sum(qty for t in range(1, 400)
-                       for _, qty in f.orders_this_step(t, history, 0.0026, 0.5, 0.5))
+                       for _, qty in f.orders_this_step(t, history, 0.0026))
 
         base = cfg.bg_flow_btc_per_min * 399
         self.assertLess(volume(calm), base, "a calm market must draw below the base rate")
@@ -368,7 +368,7 @@ class FlowTests(unittest.TestCase):
         flow = BackgroundTakerFlow(cfg, 9)
         hist = [100_000.0] * 10
         sizes = [qty for t in range(1, 300)
-                 for _, qty in flow.orders_this_step(t, hist, 0.0026, 0.5, 0.5)]
+                 for _, qty in flow.orders_this_step(t, hist, 0.0026)]
         self.assertTrue(sizes)
         self.assertTrue(all(q >= cfg.lot_size - 1e-12 for q in sizes))
 

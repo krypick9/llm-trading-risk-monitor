@@ -85,6 +85,7 @@ class MarketView:
     liq_count_last_step: int
     liq_notional_last_step: float
     tick_size: float = 0.1
+    lot_size: float = 0.001          # the exchange's minimum order size, public info
     price_history: list = field(default_factory=list)
     own: Optional[OwnView] = None
 
@@ -222,6 +223,7 @@ class Exchange:
             liq_count_last_step=self.last_liq_count,
             liq_notional_last_step=self.last_liq_notional,
             tick_size=cfg.tick_size,
+            lot_size=cfg.lot_size,
             price_history=self.price_history[-61:],
             own=own,
         )
@@ -269,10 +271,8 @@ class Exchange:
 
     # ---- background taker flow --------------------------------------------
     def _background_flow_orders(self, t: int) -> list:
-        depth_bid, depth_ask = self.book.depth(self.cfg.depth_band)
         pairs = self.bg_flow.orders_this_step(t, self.index_history,
-                                              self.scenario.sigma_hourly,
-                                              depth_bid, depth_ask)
+                                              self.scenario.sigma_hourly)
         return [OrderRequest(FLOW_ID, side, qty, price=None) for side, qty in pairs]
 
     # ---- orders -----------------------------------------------------------

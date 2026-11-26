@@ -29,7 +29,10 @@ import random
 
 from engine import BUY, SELL, CancelAll, OrderRequest
 
-MIN_TRADE = 0.002
+# The smallest adjustment worth sending, in lots. Was a free-standing 0.002,
+# which measured identically to 0.001 -- so it was never a real dial, just the
+# lot size written twice. Derived from the exchange's own minimum now.
+MIN_TRADE_LOTS = 2
 
 
 class PositionTaker:
@@ -57,8 +60,15 @@ class PositionTaker:
           "do self-deleveraging traders cascade?" is a real Phase-2 question --
           but it is the wrong baseline.
 
-    `momentum` adds a trend tilt so positions can also build endogenously from
-    price moves rather than only from the fixed bias.
+    `momentum` is the probability, each time the trader acts, that it follows the
+    recent trend instead of its own fixed direction. 0 = never (a fixed-direction
+    crowd), 1 = always (a pure trend-chasing crowd).
+
+    It used to be a weight in `direction + momentum * trend >= 0`, which could
+    not flip the sign for any momentum <= 1 and flipped shorts but not longs at
+    exactly 1. It was therefore a dead dial over its whole documented range: a
+    sweep at momentum=0.6 produced an effect of exactly zero in all 25 cells it
+    was tested in. The form below is graded and symmetric.
     """
 
     kind = "position_taker"
@@ -81,14 +91,15 @@ class PositionTaker:
         self.target_btc = None              # fixed once, in "hold" mode
 
     def _sign(self, view):
-        sign = self.direction
-        if self.momentum > 0:
-            hist = view.price_history
-            if len(hist) > self.lookback:
-                signal = math.log(hist[-1] / hist[-1 - self.lookback])
-                if abs(signal) > 0:
-                    sign = 1 if (self.direction + self.momentum * (1 if signal > 0 else -1)) >= 0 else -1
-        return sign
+        if self.momentum <= 0:
+            return self.direction
+        hist = view.price_history
+        if len(hist) <= self.lookback:
+            return self.direction
+        signal = math.log(hist[-1] / hist[-1 - self.lookback])
+        if signal == 0 or self.rng.random() >= self.momentum:
+            return self.direction
+        return 1 if signal > 0 else -1
 
     def act(self, view):
         if self.rng.random() > self.act_prob:
@@ -96,6 +107,7 @@ class PositionTaker:
         own = view.own
         sign = self._sign(view)
 
+        min_trade = view.lot_size * MIN_TRADE_LOTS
         if self.rebalance == "constant_leverage":
             target = sign * self.target_leverage * max(own.equity, 0.0) / view.mark_price
         else:
@@ -111,7 +123,7 @@ class PositionTaker:
                 return []
 
         delta = target - own.position
-        if abs(delta) < MIN_TRADE:
+        if abs(delta) < min_trade:
             return []
         side = BUY if delta > 0 else SELL
         ref = (view.best_ask if side == BUY else view.best_bid) or view.last_price
@@ -163,8 +175,8 @@ class MakerAgent:
 
     kind = "maker"
 
-    def __init__(self, account_id, seed, half_spread_ticks=1.5, quote_size=0.05,
-                 inventory_limit=0.10, skew=0.6, vol_withdraw=0.0015,
+    def __init__(self, account_id, seed, half_spread_ticks=1.5, quote_size=0.003,
+                 inventory_limit=0.015, skew=0.6, vol_withdraw=0.003,
                  widen_factor=3.0, lookback=5):
         self.account_id = account_id
         self.rng = random.Random(f"{seed}|maker|{account_id}")

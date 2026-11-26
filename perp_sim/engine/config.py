@@ -12,10 +12,11 @@ Removed from the Phase-0 config on purpose (see README "What was cut"):
   - the market-scale calibration machinery and its many flow dials
 
 Restored after review (see README "Restored after review"):
+  - the index volatility regime (see Scenario: kept, but for volume dispersion
+    rather than for volatility clustering)
   - funding (a perpetual-futures risk channel; the Phase-0 cap was ~1/20 of the
     real venue cap, which is why it looked negligible -- the cap, not the
     mechanism, was the problem)
-  - AR(1) volatility clustering, as a hand-set vol multiplier (see Scenario)
   - historical replay of a real BTC path, as a third scenario
 """
 
@@ -161,7 +162,6 @@ class SimConfig:
     bg_flow_max_size_btc: float = 0.3
     bg_flow_inventory_cap_btc: float = 5.0
     bg_flow_vol_excitement: float = 2.0   # arrival rate rises when the index just moved
-    bg_flow_imbalance_skew: float = 0.15  # flow leans to the thinner book side
 
     # ---- measurement ------------------------------------------------------
     depth_band: float = 0.001         # +-0.10% band for the depth columns
@@ -200,11 +200,18 @@ class Scenario:
     bg_walkaway: bool           # LP liquidity retreats when prices move fast
     shock_frac: float | None = None   # when an optional scheduled shock hits (share of run)
     shock_return: float = 0.0         # size of that shock, e.g. -0.05 = -5%
-    # volatility clustering (AR(1) multiplier on the index vol; hand-set, NOT fitted).
-    #   vol_cluster_rho: persistence of the vol regime (0 = off, ~0.95 = sticky).
-    #   vol_cluster_vov: how much the vol multiplier swings ("vol of vol").
-    vol_cluster_rho: float = 0.0
-    vol_cluster_vov: float = 0.0
+    # Index volatility regime: an AR(1) multiplier on sigma, centred so the
+    # long-run level is unchanged. It is kept for a reason that is NOT its
+    # original one. A paired test over 24 seeds showed it does nothing for
+    # volatility clustering itself (squared-return ACF1 0.335 -> 0.343, t=0.31)
+    # -- that comes from the order flow. What it does drive, through the flow's
+    # excitement modulator, is VOLUME DISPERSION and flat minutes: without it
+    # the volume coefficient of variation falls 1.01 -> 0.94 (t=-5.5, real ~1.0)
+    # and flat minutes 4.9% -> 2.9% (t=-5.9, real 3.8%). It was nearly deleted
+    # on an 8-seed unpaired test that could not see either effect.
+    vol_cluster_rho: float = 0.0      # persistence of the vol regime (0 = off)
+    vol_cluster_vov: float = 0.0      # how much the multiplier swings
+
     # historical replay (restored after review). When use_replay is True the
     # index follows a real 1-minute BTC path from data/processed/replay_prices.json
     # instead of the synthetic process, and no scheduled shock is applied.

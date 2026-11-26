@@ -30,8 +30,13 @@ from agents import MakerAgent, PositionTaker
 
 @dataclass(frozen=True)
 class PopulationSpec:
+    # The market's SCALE is the total capital, not the head count. Measured:
+    # 50 x $1000, 25 x $2000 and 100 x $500 all give the same share of traders
+    # liquidated (37.1 / 37.5 / 37.1%) and the same calm-market statistics. Only
+    # the product mattered, so it is the dial now and `m_traders` only changes
+    # how that capital is split up.
     m_traders: int = 50               # total traders; the same in every condition
-    collateral: float = 1000.0        # uniform mini-market cash per trader
+    total_trader_capital: float = 50_000.0   # mini-market scale, split evenly
     target_leverage: float = 5.0      # MEDIAN target leverage (raise it to stress)
     act_prob: float = 0.4
     long_bias: float = 0.5            # share of traders that are long (0.5 = balanced)
@@ -53,8 +58,13 @@ class PopulationSpec:
     # 25% of minutes close unchanged (real: 3.8%). Phase 0 hit the same wall and
     # noted it. Swept 0.003-0.05; 0.003 gives flat minutes 5.8% and the best
     # volume dispersion.
-    maker_quote_size: float = 0.003   # per side, per maker
-    maker_inventory_limit: float = 0.015
+    # Likewise the TOUCH DEPTH is the dial, not the size each maker shows. With
+    # a per-maker size, doubling the population doubled the depth at the touch:
+    # at 100 traders the price got pinned (flat minutes 5.2% -> 9.0%, kurtosis
+    # 14 -> 41). Fixing the total keeps the market the same whatever the head
+    # count, which is what makes population size safe to vary.
+    maker_touch_depth_btc: float = 0.03   # total resting size per side at the touch
+    maker_inventory_limit_mult: float = 5.0   # inventory cap, in units of its own quote
     maker_vol_withdraw: float = 0.003      # widen above this 5-step move, leave above 2x
 
     # ---- spread of leverage across the crowd -----------------------------
@@ -75,6 +85,22 @@ class PopulationSpec:
     leverage_sigma: float = 0.6
     leverage_min: float = 1.0
     leverage_max: float = 20.0        # keep at or below SimConfig.max_leverage
+
+    @property
+    def collateral(self) -> float:
+        """Cash per trader. Derived, so the market's scale does not move when
+        the head count does."""
+        return self.total_trader_capital / max(1, self.m_traders)
+
+    @property
+    def n_makers(self) -> int:
+        return round(self.maker_share * self.m_traders)
+
+    @property
+    def maker_quote_size(self) -> float:
+        """Per-maker quote, derived so the touch holds `maker_touch_depth_btc`
+        in total however many makers there are."""
+        return self.maker_touch_depth_btc / max(1, self.n_makers)
 
 
 @dataclass(frozen=True)
@@ -114,7 +140,7 @@ def make_slots(seed: int, spec: PopulationSpec) -> list:
     if not 0.0 <= spec.maker_share <= 1.0:
         raise ValueError(f"maker_share must be in [0, 1], got {spec.maker_share}")
 
-    n_makers = round(spec.maker_share * spec.m_traders)
+    n_makers = spec.n_makers
     kinds = ["maker"] * n_makers + ["taker"] * (spec.m_traders - n_makers)
     rng.shuffle(kinds)
 
@@ -150,10 +176,11 @@ def make_slots(seed: int, spec: PopulationSpec) -> list:
 
 def make_scripted(slot: Slot, seed: int, spec: PopulationSpec):
     if slot.kind == "maker":
+        quote = spec.maker_quote_size
         return MakerAgent(slot.account_id, seed,
                           half_spread_ticks=spec.maker_half_spread_ticks,
-                          quote_size=spec.maker_quote_size,
-                          inventory_limit=spec.maker_inventory_limit,
+                          quote_size=quote,
+                          inventory_limit=quote * spec.maker_inventory_limit_mult,
                           vol_withdraw=spec.maker_vol_withdraw)
     return PositionTaker(slot.account_id, seed, target_leverage=slot.leverage,
                          act_prob=spec.act_prob, direction=slot.direction,

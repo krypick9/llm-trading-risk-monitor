@@ -10,7 +10,9 @@ without estimating queue-level intensities from L2 data):
 
   1. Volatility excitement: the arrival rate rises when the index just moved
      more than a normal recent move.
-  2. Book-imbalance skew: flow leans toward the thinner side of the near book.
+  (A second modulator, a lean toward the thinner side of the book, was deleted
+  after a measurement showed it changed nothing: with it off, no calm-market
+  statistic and no risk outcome moved by as much as the seed-to-seed spread.)
 
 This flow is anonymous market texture. It is NOT liquidatable and has no
 strategy; the liquidatable, swappable traders are in population.py.
@@ -93,7 +95,7 @@ class BackgroundTakerFlow:
                 return n
             n += 1
 
-    def orders_this_step(self, step, index_history, sigma_hourly, depth_bid, depth_ask) -> list:
+    def orders_this_step(self, step, index_history, sigma_hourly) -> list:
         cfg = self.cfg
         rate = self.orders_per_min * cfg.step_minutes
 
@@ -127,19 +129,12 @@ class BackgroundTakerFlow:
                 cfg.bg_flow_size_sigma * self.rng.gauss(0.0, 1.0))
             sizes.append(min(cfg.bg_flow_max_size_btc, max(cfg.lot_size, size)))
 
-        # (2) book-imbalance skew
-        p_buy = 0.5
-        depth_total = depth_bid + depth_ask
-        if depth_total > 0 and cfg.bg_flow_imbalance_skew:
-            imb = (depth_bid - depth_ask) / depth_total
-            p_buy = min(0.8, max(0.2, 0.5 + cfg.bg_flow_imbalance_skew * imb))
-
         orders = []
         for qty in sizes:
             if abs(self.inventory_btc) > cfg.bg_flow_inventory_cap_btc:
                 side = -1 if self.inventory_btc > 0 else 1
             else:
-                side = 1 if self.rng.random() < p_buy else -1
+                side = 1 if self.rng.random() < 0.5 else -1
             qty = math.floor(qty / cfg.lot_size + 1e-9) * cfg.lot_size
             if qty < cfg.lot_size:
                 continue
