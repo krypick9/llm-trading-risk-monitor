@@ -341,7 +341,8 @@ class Exchange:
         """The exchange's own liquidity provider -- the only resting liquidity
         in the minimal market. It posts a ladder around a centre between the last
         trade and the index price (bg_anchor_strength sets how close to the
-        index). In stress it retreats when prices move beyond the threshold."""
+        index). In stress it retreats when prices move beyond the threshold, and
+        it shows less on whichever side its own inventory is already heavy."""
         cfg, s = self.cfg, self.scenario
         self.book.cancel_account(BG_ID)
         factor, widen, look = 1.0, 1.0, 5
@@ -352,14 +353,53 @@ class Exchange:
                 factor, widen = 0.3, 2.0
         centre = self.last_price + cfg.bg_anchor_strength * (self.index_price - self.last_price)
         half = s.bg_half_spread * widen
-        size = self._floor_lot(s.bg_depth_btc * factor / cfg.bg_levels)
-        if size >= cfg.lot_size:
-            for i in range(cfg.bg_levels):
-                offset = half + i * cfg.bg_level_gap
-                for side, px in ((BUY, centre * (1 - offset)), (SELL, centre * (1 + offset))):
-                    order = Order(self._next_oid(), BG_ID, side, size,
-                                  self.book.round_price(px), "GTC", step=t)
-                    self._apply_fills(self.book.submit(order), stats)
+
+        bid_scale, ask_scale = self._bg_inventory_scales()
+        for offset, size in self._bg_ladder(half, s.bg_depth_btc * factor):
+            for side, px, scale in ((BUY, centre * (1 - offset), bid_scale),
+                                    (SELL, centre * (1 + offset), ask_scale)):
+                qty = self._floor_lot(size * scale)
+                if qty < cfg.lot_size:
+                    continue
+                order = Order(self._next_oid(), BG_ID, side, qty,
+                              self.book.round_price(px), "GTC", step=t)
+                self._apply_fills(self.book.submit(order), stats)
+
+    def _bg_ladder(self, half: float, depth_in_band: float) -> list:
+        """The (offset, size) pairs the LP quotes on each side.
+
+        Offsets grow geometrically so the ladder reaches percent scale; sizes
+        decay geometrically so the book is dense at the touch and thin in the
+        tail. Sizes are normalised so the levels INSIDE the measurement band
+        sum to `depth_in_band` -- that keeps near depth on its calibrated value
+        however far the ladder reaches, so reach and depth are independent."""
+        cfg = self.cfg
+        offsets, gap = [], cfg.bg_level_gap
+        cumulative = 0.0
+        for i in range(max(1, cfg.bg_levels)):
+            offsets.append(half + cumulative)
+            cumulative += gap
+            gap *= cfg.bg_level_gap_growth
+
+        weights = [cfg.bg_size_decay ** i for i in range(len(offsets))]
+        in_band = sum(w for w, o in zip(weights, offsets) if o <= cfg.depth_band)
+        if in_band <= 0:                      # the first level is already outside
+            in_band = weights[0]
+        unit = depth_in_band / in_band
+        return [(o, w * unit) for o, w in zip(offsets, weights)]
+
+    def _bg_inventory_scales(self) -> tuple:
+        """How much of the ladder the LP is still willing to show on each side.
+
+        It tapers linearly with the inventory it is carrying and reaches zero on
+        the side that would add to a full book: as forced selling makes the LP
+        longer and longer, its bids thin out and then stop, which is how the bid
+        side can genuinely run out. Returns (bid_scale, ask_scale)."""
+        limit = self.cfg.bg_inventory_limit_btc
+        if not limit or limit <= 0:
+            return 1.0, 1.0
+        frac = max(-1.0, min(1.0, self.accounts[BG_ID].position / limit))
+        return max(0.0, 1.0 - max(0.0, frac)), max(0.0, 1.0 - max(0.0, -frac))
 
     # ---- liquidation engine -----------------------------------------------
     def _run_liquidations(self, t: int, stats: _Stats) -> list:

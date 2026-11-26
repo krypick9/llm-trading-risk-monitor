@@ -61,11 +61,55 @@ class SimConfig:
     # MakerBots, and taker flow -- the overlap caused the scale conflict).
     # The LP is the only tie between the exchange price and the outside index.
     #   bg_anchor_strength: 0 = ignore the index, 1 = follow it fully.
-    #   bg_levels x bg_level_gap: how far the quoted liquidity reaches.
     bg_anchor_strength: float = 0.8
-    bg_levels: int = 5
-    bg_level_gap: float = 0.0002          # 0.02% spacing between quoted levels
     bg_walkaway_threshold: float = 0.01   # LP retreats on a >1% move over 5 steps
+
+    # ---- the shape of the quoted ladder ----------------------------------
+    # The ladder's PRICE REACH, not just its size, decides whether a cascade is
+    # representable at all. With the old uniform ladder (5 levels, flat 0.0002
+    # spacing) the whole book spanned 0.08%, so exhausting every level could
+    # move the price at most 0.08% and forced selling produced 0.00 pp of
+    # endogenous amplification. See README "The ladder, and why its shape is
+    # load-bearing".
+    #
+    # Spacing grows geometrically, so the ladder reaches percent scale without
+    # needing hundreds of levels:
+    #     offset_0 = bg_half_spread
+    #     offset_i = offset_0 + bg_level_gap * (1 + g + ... + g^(i-1)),  g = growth
+    # Size decays geometrically away from the touch (bg_size_decay), so the book
+    # is dense near the mid and thin in the tail, like a real one.
+    #
+    # bg_depth_btc (on the Scenario) is the size WITHIN the measurement band
+    # (+-depth_band, i.e. +-0.10%), which is what it was calibrated against.
+    # Levels beyond that band add to the total book without changing near depth,
+    # so reach and near depth are now set independently. Phase 0 divided one
+    # total by the level count, which meant "more levels" silently meant
+    # "uniformly thinner" and the two could not be varied separately.
+    bg_levels: int = 20                   # levels quoted per side
+    bg_level_gap: float = 0.0002          # first gap: 0.02%
+    bg_level_gap_growth: float = 1.18     # geometric growth of the gap -> ~2.9% reach
+    bg_size_decay: float = 0.95           # per-level size multiplier away from the touch
+
+    # ---- how much the LP can absorb --------------------------------------
+    # Phase 0's LP had $1e12, was not liquidatable, and re-quoted a full ladder
+    # every minute, so it was an infinitely deep mean-reverting force: nothing
+    # could exhaust it and the price could not run. Here its quoting tapers with
+    # the inventory it has taken on, and stops on the side that would add to a
+    # full book. That is what lets forced selling actually run out of bids.
+    # None = unlimited (the Phase-0 behaviour), for a counterfactual.
+    #
+    # The limit must sit ABOVE the inventory ordinary two-way flow pushes onto
+    # the LP and BELOW what a cascade's forced selling delivers, or it does the
+    # wrong job. The background flow caps its own inventory at
+    # bg_flow_inventory_cap_btc (5 BTC) and the LP is its counterparty, so the
+    # LP routinely carries +-5 BTC with nothing wrong. At a limit of 3 it
+    # therefore stopped quoting during NORMAL churn: the book went one-sided 9%
+    # of steps, median spread blew out to 1.0e-3 (~1000x real) and local
+    # volatility to 0.029 (~11x real). At 15 it is invisible in calm markets
+    # (one-sided 0.0%, spread 1.0e-6) and still binds in a cascade. Results are
+    # flat between 15 and 40, so this is not a knife-edge.
+    # If you change bg_flow_inventory_cap_btc, re-check this.
+    bg_inventory_limit_btc: float | None = 15.0
 
     # ---- background taker flow (the demand side; see engine/flow.py) ------
     # Anonymous aggressive orders so the last price actually moves on trades.

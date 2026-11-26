@@ -10,7 +10,7 @@ a failure points at one mechanism rather than at the random seed.
 
 import unittest
 
-from engine import (BUY, SELL, Account, Exchange, Order, OrderBook,
+from engine import (BG_ID, BUY, SELL, Account, Exchange, Order, OrderBook,
                     OrderRequest, Scenario, SimConfig, get_scenario)
 from engine.flow import BackgroundTakerFlow
 
@@ -313,6 +313,107 @@ class FlowTests(unittest.TestCase):
         self.assertGreater(sum(r.n_trades for r in ex.records), 0)
         flat = sum(1 for r in ex.records if r.price_return == 0.0)
         self.assertLess(flat / len(ex.records), 0.5)
+
+
+# ---- the LP ladder's shape ----------------------------------------------
+class LadderShapeTests(unittest.TestCase):
+    """The ladder's price REACH decides whether a cascade is representable.
+
+    Phase 0 and the first minimal version quoted 5 flat levels 0.0002 apart, so
+    the whole book spanned 0.08% and forced selling produced 0.00 pp of
+    endogenous amplification -- the price could not fall further than the book
+    reached. These tests guard the fix.
+    """
+
+    def _exchange(self, **kw):
+        return Exchange(SimConfig(n_steps=5, **kw), get_scenario("normal"))
+
+    def test_the_ladder_reaches_percent_scale(self):
+        ladder = self._exchange()._bg_ladder(4.4e-07, 0.5)
+        reach = ladder[-1][0]
+        self.assertGreater(reach, 0.01, "the ladder must reach percent scale")
+        # the old uniform ladder reached 0.08%; anything near that cannot host
+        # a cascade at all
+        self.assertGreater(reach, 10 * 0.0008)
+
+    def test_near_depth_does_not_depend_on_the_level_count(self):
+        """Reach and near depth must be settable independently. Phase 0 divided
+        one total by the level count, so 'more levels' silently meant
+        'uniformly thinner' and the two dials were tangled."""
+        band = SimConfig().depth_band
+        for levels in (6, 20, 40):
+            ladder = self._exchange(bg_levels=levels)._bg_ladder(4.4e-07, 0.5)
+            in_band = sum(size for offset, size in ladder if offset <= band)
+            self.assertAlmostEqual(in_band, 0.5, places=6,
+                                   msg=f"near depth moved at bg_levels={levels}")
+
+    def test_size_decays_away_from_the_touch(self):
+        ladder = self._exchange()._bg_ladder(4.4e-07, 0.5)
+        sizes = [size for _, size in ladder]
+        self.assertTrue(all(a >= b for a, b in zip(sizes, sizes[1:])))
+        self.assertLess(sizes[-1], sizes[0])
+
+    def test_offsets_are_strictly_increasing(self):
+        offsets = [o for o, _ in self._exchange()._bg_ladder(4.4e-07, 0.5)]
+        self.assertTrue(all(a < b for a, b in zip(offsets, offsets[1:])))
+
+
+class LPInventoryTests(unittest.TestCase):
+    """The LP must be exhaustible, or forced selling never runs out of bids."""
+
+    def _exchange(self, **kw):
+        return Exchange(SimConfig(n_steps=5, **kw), get_scenario("normal"))
+
+    def test_no_limit_means_the_old_unlimited_behaviour(self):
+        ex = self._exchange(bg_inventory_limit_btc=None)
+        ex.accounts[BG_ID].position = 500.0
+        self.assertEqual(ex._bg_inventory_scales(), (1.0, 1.0))
+
+    def test_a_long_lp_shows_fewer_bids_and_unchanged_offers(self):
+        ex = self._exchange(bg_inventory_limit_btc=10.0)
+        ex.accounts[BG_ID].position = 5.0
+        bid, ask = ex._bg_inventory_scales()
+        self.assertAlmostEqual(bid, 0.5)
+        self.assertAlmostEqual(ask, 1.0)
+
+    def test_at_the_limit_the_lp_stops_quoting_that_side(self):
+        ex = self._exchange(bg_inventory_limit_btc=10.0)
+        ex.accounts[BG_ID].position = 10.0
+        self.assertEqual(ex._bg_inventory_scales()[0], 0.0)      # no bids left
+        ex.accounts[BG_ID].position = -20.0                      # beyond, short
+        self.assertEqual(ex._bg_inventory_scales()[1], 0.0)      # no offers left
+
+    def test_the_limit_must_exceed_what_ordinary_flow_pushes_onto_the_lp(self):
+        """Regression guard. The LP is the background flow's counterparty, so it
+        routinely carries up to bg_flow_inventory_cap_btc with nothing wrong. A
+        limit at or below that made it stop quoting in CALM markets: one-sided
+        book 9% of steps, median spread ~1000x real, local volatility ~11x."""
+        cfg = SimConfig()
+        self.assertIsNotNone(cfg.bg_inventory_limit_btc)
+        self.assertGreater(cfg.bg_inventory_limit_btc, 2 * cfg.bg_flow_inventory_cap_btc)
+
+
+class CascadeAmplificationTests(unittest.TestCase):
+    def test_forced_selling_now_deepens_the_dip(self):
+        """The whole point of the ladder fix: the same run with liquidations on
+        must push the exchange price further below the index than with them off.
+
+        Before the fix this difference was 0.00 pp at every setting tried. It is
+        now negative on every seed checked (-0.34 to -2.38 pp over seeds 0-5);
+        seed 0 is asserted with a margin well inside that range."""
+        from population import PopulationSpec as Spec
+        from run import run as run_sim
+
+        def dip(liquidations):
+            ex, _ = run_sim("stress", 600, seed=0,
+                            spec=Spec(target_leverage=20.0, long_bias=0.7),
+                            cfg_overrides={"liquidations_enabled": liquidations})
+            return 100 * min((r.last_price - r.index_price) / r.index_price
+                             for r in ex.records)
+
+        on, off = dip(True), dip(False)
+        self.assertLess(on, off - 0.2,
+                        f"forced selling did not move the price: {on:.2f}% vs {off:.2f}%")
 
 
 # ---- reproducibility and the replay path ---------------------------------
