@@ -11,7 +11,11 @@ simulator and the real data side by side, using the SAME definitions on both.
 
 Real data : data/reference/binance_aggTrades_BTCUSDT_1min.csv  (signed flow, price)
             data/reference/bybit_orderbook_BTCUSDT_1min.csv    (spread, depth within 0.10%)
-Sim       : perp_sim, normal-trader baseline, 50 bots, 600 steps, fresh seeds.
+Sim       : perp_sim built by data/scripts/sim_setup.py, i.e. the SAME config and
+            population as run_calibration.run_one: reference population (no noise
+            bots), 50 bots, 600 steps, background flow on (2.2 orders/min, an
+            ASSUMPTION; see sensitivity_flow_count.py), AR(1) volatility clustering on.
+            Fresh seeds.
 
 Metrics (same formula on both sides)
   1. price_impact_norm : lambda x median minute volume. lambda = Cov(ret, signed flow)/Var(flow).
@@ -25,11 +29,12 @@ Metrics (same formula on both sides)
 Reading the result
   Tolerance bands below were chosen by us AFTER seeing a first run, so this is a
   DIAGNOSTIC of where the simulator differs from reality, not a formal pass/fail
-  test like validate_heldout.py. Liquidation counts cannot be checked: the
-  reference data contain no liquidation feed.
+  test like validate_heldout.py. Do not change the bands after seeing new results.
+  Liquidation counts cannot be checked: the reference data contain no liquidation feed.
 
-Run (from data/scripts):  py validate_microstructure_vs_real.py [--seeds 10]
+Run (from data/scripts):  py validate_microstructure_vs_real.py [--seeds 10] [--flow-orders 80]
 Output: data/processed/validation_microstructure.json
+        (a non-default --flow-orders writes validation_microstructure_flow<N>.json instead)
 """
 import argparse
 import json
@@ -47,8 +52,8 @@ REF_DIR = os.path.join(REPO_ROOT, "data", "reference")
 sys.path.insert(0, PERP_SIM_DIR)
 sys.path.insert(0, SCRIPT_DIR)
 
-from engine import SimConfig, Exchange, SCENARIOS      # noqa: E402
-from baseline_crowd import make_crowd, open_accounts    # noqa: E402
+from engine import SCENARIOS      # noqa: E402
+import sim_setup                  # noqa: E402
 
 SEEDS0 = 1000                 # not used in calibration (42,123,456,789,2025)
 CRASH_DAY = "2025-10-10"
@@ -125,17 +130,12 @@ def real_crash(d):
 
 
 # ---------------------------------------------------------------- simulator
-def run_sim(name, seed):
-    cfg = SimConfig(n_steps=N_STEPS, step_minutes=1.0, seed=seed, initial_collateral=1000.0, bg_flow_enabled=True, bg_backstop_only=True)
-    ex = Exchange(cfg, SCENARIOS[name])
-    pop = make_crowd(seed, n_total=50)
-    open_accounts(ex, pop)
-    for _ in range(N_STEPS):
-        acts = []
-        for b in pop.bots:
-            acts += b.act(ex.view(b.account_id))
-        ex.step(acts)
-    return ex.records
+def run_sim(name, seed, flow_orders=None):
+    """One run through the shared setup (same config/population as calibration)."""
+    flow = sim_setup.FLOW_ORDERS_PER_MIN if flow_orders is None else flow_orders
+    exchange, _ = sim_setup.run(SCENARIOS[name], seed, N_STEPS, sim_setup.N_BOTS,
+                                flow_orders_per_min=flow)
+    return exchange.records
 
 
 def sim_stats(recs, crash):
@@ -170,8 +170,11 @@ def band(name, sim, real, lo, hi):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=10)
+    ap.add_argument("--flow-orders", type=float, default=None,
+                    help="flow orders per minute (default: sim_setup.FLOW_ORDERS_PER_MIN)")
     args = ap.parse_args()
     seeds = [SEEDS0 + i for i in range(args.seeds)]
+    flow = sim_setup.FLOW_ORDERS_PER_MIN if args.flow_orders is None else args.flow_orders
 
     tg = json.load(open(os.path.join(PROCESSED_DIR, "calibration_targets.json")))
     train_days, held_days = tg["normal"]["training_days"], tg["held_out"]["days"]
@@ -180,12 +183,12 @@ def main():
     real = {"train": real_calm(d, train_days), "held_out": real_calm(d, held_days), "crash": real_crash(d)}
     sim = {}
     for scn in ["normal-thick-synthetic-no-event", "normal-thin-synthetic-no-event"]:
-        sim[scn] = avg([sim_stats(run_sim(scn, s), crash=False) for s in seeds])
+        sim[scn] = avg([sim_stats(run_sim(scn, s, flow), crash=False) for s in seeds])
     for scn in ["stress-thick-replay", "stress-thin-replay"]:
-        sim[scn] = avg([sim_stats(run_sim(scn, s), crash=True) for s in seeds])
+        sim[scn] = avg([sim_stats(run_sim(scn, s, flow), crash=True) for s in seeds])
 
     print("=" * 74)
-    print(f"Microstructure: simulator vs real ({len(seeds)} fresh seeds)")
+    print(f"Microstructure: simulator vs real ({len(seeds)} fresh seeds, flow {flow} orders/min)")
     print("=" * 74)
     cmp_ = {}
     ref = real["held_out"]
@@ -211,9 +214,13 @@ def main():
         cmp_[scn] = {"worst_1min_sim_over_real": s["worst_1min_return"] / rc["worst_1min_return"],
                      "max_dd_sim_over_real": s["max_drawdown"] / rc["max_drawdown"]}
 
-    out = {"seeds": seeds, "real": real, "sim": sim, "comparison": cmp_,
-           "note": "Diagnostic only; bands chosen after a first look. No real liquidation data."}
-    path = os.path.join(PROCESSED_DIR, "validation_microstructure.json")
+    out = {"seeds": seeds, "environment": sim_setup.describe(flow_orders_per_min=flow),
+           "real": real, "sim": sim, "comparison": cmp_,
+           "note": "Diagnostic only; bands chosen after a first look and not to be changed after seeing results. "
+                   "No real liquidation data. Flow count is an assumption (see sensitivity_flow_count.py)."}
+    name = "validation_microstructure.json" if args.flow_orders is None or flow == sim_setup.FLOW_ORDERS_PER_MIN \
+        else f"validation_microstructure_flow{flow:g}.json"
+    path = os.path.join(PROCESSED_DIR, name)
     json.dump(out, open(path, "w"), indent=2)
     print(f"\nSaved to {path}")
 
