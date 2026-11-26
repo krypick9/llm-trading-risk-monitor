@@ -98,13 +98,35 @@ python3 -m pytest tests/ -q
   evidence (`data/scripts/`, `data/processed/`) but the simulator no longer
   depends on them. `legacy/README.md` records why: the calibration never applied
   to the market the experiment ran, and it was not identified.
-- **Phase 1 cannot produce a result yet.** Forced liquidations currently have no
-  measurable price effect (0.00 pp of endogenous amplification across 5 seeds,
-  even with 700+ liquidations), because the LP's quoted ladder spans only 0.08%.
-  The cause is diagnosed and the fix is scoped in `perp_sim/README.md` →
-  "Known open issues". Run `python3 sanity.py` and read that section before
-  starting any agent experiment.
-- LLM agents and the Phase 1 replacement runner are not yet implemented.
+- **The simulator is a working test bench; the experiment is not ready.** The
+  causal spine runs end to end — a dispersed, holding crowd builds leverage, the
+  price falls, accounts breach at different thresholds, forced selling hits a
+  book with reach that can be exhausted, the mark drags, more accounts breach.
+  Forced selling moves the price by −2.9 pp of extra dip, and distinct accounts
+  liquidated responds across 6 of 7 leverage levels. Always run
+  `cd perp_sim && python3 sanity.py` before an experiment: it is the go/no-go
+  gate, and it fails if the risk metric stops responding.
+- **The four commits that got it there have not been independently reviewed.**
+  They were written in one session. Before results are built on them, someone
+  else should read `perp_sim/engine/flow.py`, `_bg_ladder` and
+  `_bg_inventory_scales` in `perp_sim/engine/exchange.py`, and
+  `agents.PositionTaker`, and re-run the parameter sweeps in
+  `perp_sim/README.md`. The defaults are documented with evidence but they are
+  still judgement calls.
+- **LLM agents and the Phase 1 runner are not implemented**, and that — not the
+  simulator — is what gates Phase 1. There is an `act(view)` hook and a skeleton
+  in `perp_sim/agents.py`, no agent, no API wiring and no cost model. 50 traders
+  × 600 steps is 30,000 agent decisions per run; measure cost and wall-clock on
+  one small run before committing to an experiment design.
+- **Pre-register Phase 1 before running it.** This market has now been inspected
+  extensively — scenarios, seeds, leverage sweeps, which settings give which
+  numbers. Write down the scenarios, seed count, `n_llm` points, primary metric
+  and statistical test, then do not change them. The Phase-0 held-out days are
+  already only a diagnostic for exactly this reason.
+- **One visible validation miss**: median quoted spread is ~138× real, because
+  the background LP only re-quotes once per minute while the flow trades
+  throughout it. Not a dependent variable, but it is the first thing a validation
+  table invites a question about. Diagnosed and scoped in `perp_sim/README.md`.
 - Numbers in `data/processed/*.json` are stale: they were produced by the Phase-0
   engine at settings it no longer ships. See `legacy/README.md`.
 - API keys must never be committed. Use `.env` (see `.env.example`).

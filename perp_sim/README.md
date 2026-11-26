@@ -1,8 +1,8 @@
 # perp_sim — minimal BTC perpetual-futures simulator
 
 The simulator for the FYP *"Risk Monitoring for LLM Trading Agents"*. It is a
-deliberately small rewrite of the Phase-0 engine (archived at
-`legacy/perp_sim_phase0/`). The goal of the cut is **fewer moving parts**: when a
+deliberately small rewrite of the Phase-0 engine (archived, and still runnable,
+at `legacy/perp_sim_phase0/`). The goal of the cut is **fewer moving parts**: when a
 risk number looks wrong, you should be able to tell which component caused it.
 
 Phase-0's real problem was not its size -- ~1,800 lines is small -- but the
@@ -99,26 +99,39 @@ Two cheap, honest checks replace the calibration grid:
 (squared-return ACF1 > 0), positive price impact (buys push up).
 
 **B. Power check** (the important one): with scripted traders only, sweep leverage
-and confirm liquidations respond. *If the instrument can't register a known
+and confirm liquidations respond monotonically *and across a usable range*. It
+counts **distinct accounts liquidated**, not raw liquidation events — one trader
+that rebuilds and is liquidated again inflates the raw count without any extra
+risk having happened — and it requires at least 4 of 7 leverage levels to
+respond, because a metric that only fires at 20× cannot show an agent effect at a
+leverage anyone would run. *If the instrument can't register a known
 perturbation, it can't register an agent effect.* **Run this before any Phase-1
 agent experiment.**
 
 Current output (5 seeds / 3 seeds):
 
-    A. fat tails      kurtosis   = 8.83   PASS   (real BTC ~10)
-       vol clustering sq-ret ACF1= 0.076  PASS   (real ~0.27 — moderate, see caveat)
+    A. fat tails      kurtosis   = 12.96  PASS   (real BTC ~10.6)
+       vol clustering sq-ret ACF1= 0.338  PASS   (real ~0.275)
        price impact   slope      > 0      PASS
-    B. leverage  2x ->   0.0 liquidations
-       leverage  5x ->   0.0
-       leverage 10x ->   0.0
-       leverage 20x -> 731.7            monotone + detectable PASS
+       volume varies  coeff of var= 1.12  PASS   (real ~1.0)
+       volume ~ |ret| correlation = 0.48  PASS   (>0)
+       impact R^2     (info)      = 0.202         (real 0.36)
+    B.  median lev  accts liq  liq steps  max/step   bad debt
+                 2        0.0        0.0       0.0          0
+                 3        0.7        0.7       0.3          0
+                 5        2.0        1.0       2.0        115
+                 8        9.0        4.3       6.7        889
+                10       18.0        7.3      15.7       2252
+                15       27.0        9.3      24.7       7444
+                20       31.3       10.3      30.7      11752
+        monotone: True ; levels with liquidations: 6/7 -> PASS
 
 ### Where the market now sits vs real BTC
 
 Not targets — these are not fitted — but worth recording, because the capital-scale
 fix moved them a long way. Normal scenario, 600 steps, 5 seeds:
 
-| | Phase-0 engine | here | real BTC (Phase-0 measurement) |
+| | Phase-0 engine | here | real BTC (measured in Phase 0) |
 |---|---|---|---|
 | steps with a one-sided book | 28–46% | **0.2–0.9%** | ~0% |
 | near depth per side | 0.003–0.21 BTC | **0.42 BTC** | 0.49 BTC (scaled) |
@@ -131,59 +144,39 @@ Almost none of this came from deleted code. It came from putting trader capital 
 the same scale as the book ($1,000 × 50 instead of $5k–20k × 100).
 
 ### Known open issues — read before Phase 1
-- **Volatility clustering is moderate, not matched** (ACF ~0.09–0.12 vs real ~0.27).
-  It is deliberately *not* pushed to 0.27: with a single AR(1) multiplier, raising
-  it to 0.27 drags kurtosis to 14–22 (real ~10). A one-parameter vol process can't
-  hit both targets at once — matching both would need a richer (GARCH/regime) vol
-  model, which is more than a relative-comparison design needs. Present + plausible
-  is the right call here; chasing 0.27 would be re-introducing the fitting we cut.
-- **The power check passes but as a cliff** (0 liquidations up to 10×, then ~730 at
-  20×). The instrument is insensitive to risk until extreme leverage.
+- **Volatility clustering and fat tails now come mostly from order flow, not from
+  the index process**, and both slightly overshoot: ACF1 0.338 against a real
+  0.275, kurtosis 13.0 against 10.6. That is a better place to be than the
+  earlier 0.109 / 9.8, where the clustering came from a hand-set AR(1) and the
+  flow contributed nothing. The earlier note here said a one-parameter vol
+  process could not hit clustering and kurtosis together — true, but it turned
+  out not to be the binding constraint; the flow was.
+- **The risk metric now responds across a usable range**, after the leverage fix
+  below: distinct accounts liquidated goes 0 → 0.7 → 2 → 9 → 18 → 27 → 31 as
+  median leverage goes 2× → 20×. It was 0 at everything below 15×.
 
-- **The cascade does not amplify — this is the blocker.** At 20×/`long_bias=0.7`,
-  stress, 5 seeds: 722 liquidations, 35 accounts, $549 bad debt, and yet
-
-        liquidations ON : max drawdown 7.77%, dip vs index -0.11%
-        liquidations OFF: max drawdown 7.78%, dip vs index -0.11%
-        → endogenous amplification: 0.00 pp
-
-  700+ forced liquidations move the price not at all, so the causal spine above
-  never closes its loop. It is not the liquidation engine — that fires correctly.
-  It is the shape of the book: the LP ladder spans only
-  `bg_half_spread + (bg_levels-1) × bg_level_gap` = **0.08%**, so exhausting the
-  entire book can push the price at most 0.08% below centre (the observed dip is
-  -0.11%). Beyond that the book is empty and the last price stops rather than
-  gapping down. Widening the span switches the mechanism back on
-  (`bg_anchor_strength=0.2`, 20×, `long_bias=0.7`, 5 seeds):
-
-        levels  gap     span%   liqs  accts  badDebt   dipON%  dipOFF%  ampDip
-             5  0.0002   0.08    446   32.8     $321    -0.41    -0.41   +0.01
-             5  0.0020   0.80    619   34.4   $5,081    -3.06    -2.39   -0.67
-            20  0.0020   3.80   1894   50.0 $176,187   -15.37   -11.61   -3.75
-            40  0.0050  19.50   1598   50.0 $641,429   -53.91   -46.48   -7.43
-
-  Fixing it properly means three things, and they are the next commit, not this
-  one: (1) a span of roughly 1–4% rather than 0.08%; (2) a decaying per-level
-  size, because `size = bg_depth_btc / bg_levels` currently makes "more levels"
-  mean "uniformly thinner", so span and depth cannot be set independently;
-  (3) finite LP inventory — at `collateral=1e12`, non-liquidatable, and
-  re-centring 80% of every dislocation each minute, the LP is an infinitely deep
-  mean-reverting force that nothing can exhaust.
+- **The cascade amplifies, but only as deep as the book reaches.** Fixed in
+  "the ladder, and why its shape is load-bearing" below. Forced selling now
+  moves the price (−1.3 pp of extra dip at 20×, negative on every seed), but the
+  dip saturates at about −3% because that is where the quoted ladder runs out.
+  Cascades deeper than that are still not representable; widening the reach is a
+  one-dial change with a documented trade-off (see the table below).
 
 - **Funding is restored but still small**, because the premium it is computed from
-  is near zero — the LP pins the exchange price to the index. That is the *same*
-  root cause as the missing cascade, not a separate problem; funding will start to
-  matter once the basis can actually move. The cap is now right, and
-  `test_the_cap_is_the_real_venue_order_of_magnitude` guards it.
+  is near zero — the LP anchors the exchange price to the index at
+  `bg_anchor_strength=0.8`, i.e. it erases 80% of any dislocation each minute.
+  The cap is now right (`test_the_cap_is_the_real_venue_order_of_magnitude`
+  guards it); the anchor is the remaining pin, and it is worth a sensitivity run
+  before Phase 1.
 
-- **The flow's per-minute volume is constant by construction.** `flow.py` draws
-  heavy-tailed sizes and then renormalises them so the total equals
-  `bg_flow_btc_per_min`, so measured over 600 minutes the volume is 0.170 BTC/min
-  at *both* 2.2 and 80 orders/min. Three consequences: volatility excitement adds
-  no volume (just more, smaller orders); there is no volume–volatility
-  correlation; and at 80 orders/min about 73% of draws fall below lot size and are
-  silently dropped. Phase-0's price-impact R² of 0.04 (vs 0.36 real) is most
-  likely this. Fix: scale `bg_flow_size_median_btc` and delete the renormalisation.
+- **Quoted spread degrades when the flow is aggressive**, and this is the
+  once-per-minute LP replenishment limit becoming visible rather than a flow
+  problem. `spread_rel` is recorded at the end of a step, after a minute of
+  trading against a ladder that is only re-quoted at the START of the next step,
+  so it measures "the book after a minute with no replenishment". Real books
+  refill in milliseconds. Median spread is 1.2e-4 against a real 8.8e-7. The fix
+  is intra-step replenishment (re-quote every k orders, or k sub-steps per
+  minute), and it is the next thing I would do.
 
 - **Liquidation mechanics are simplified in a direction that inflates severity**:
   full-size market IOC at any price, with no bankruptcy-price cap, no partial
@@ -227,6 +220,210 @@ control; nothing else about the market changes when you raise it.
    rather the scripted crowd provide liquidity, reinstate a maker archetype in
    `agents.py` and `population.py`.
 2. **One archetype = leveraged position-taker** with a `long_bias` knob. It's
-   symmetric at `long_bias=0.5`; raise it for crowded longs.
+   symmetric at `long_bias=0.5`; raise it for crowded longs. It **holds** its
+   position by default rather than re-targeting constant leverage — that choice
+   is what makes it liquidatable at all (see "Why the risk metric used to be
+   all-or-nothing").
 3. **Funding removed.** Re-add as a step in `exchange.step` if you decide perp
    funding matters for your risk metrics.
+
+
+## The ladder, and why its shape is load-bearing
+
+The LP's quoted ladder is the only resting liquidity, so its **price reach**, not
+just its size, decides what the market can represent. The original shape — 5
+levels, flat `0.0002` spacing — spanned 0.08%, which meant exhausting the entire
+book could move the price at most 0.08%. Forced selling therefore produced
+**0.00 pp** of endogenous amplification at every setting tried: the liquidation
+engine fired correctly and nothing happened.
+
+Three changes, which only work together:
+
+1. **Geometric spacing** (`bg_level_gap_growth`) so the ladder reaches ~2.5%
+   with 20 levels rather than 0.08% with 5.
+2. **Geometric size decay** (`bg_size_decay`) with sizes normalised so the levels
+   inside the ±0.10% band sum to `bg_depth_btc`. Reach and near depth are now
+   independent; Phase 0 divided one total by the level count, so "more levels"
+   silently meant "uniformly thinner".
+3. **A finite LP inventory** (`bg_inventory_limit_btc`). Quoting tapers with the
+   inventory the LP has taken on and stops on the side that would add to a full
+   book, so forced selling can actually run out of bids.
+
+### What each part contributes
+
+Stress, 20×, `long_bias=0.7`, 5 seeds, 600 steps:
+
+| | liquidations | bad debt | dip ON | dip OFF | amplification |
+|---|---|---|---|---|---|
+| old shape, no limit | 728 | $610 | −0.11% | −0.11% | **0.00 pp** |
+| old shape, limit 15 | 877 | $661 | −0.11% | −0.12% | **0.00 pp** |
+| new shape, no limit | 371 | $5,321 | −3.07% | −2.24% | −0.82 pp |
+| **new shape, limit 15** | 446 | $5,496 | −3.07% | −1.80% | **−1.26 pp** |
+
+The reach is what makes amplification possible at all — the inventory limit alone
+does nothing (row 2). The limit then roughly doubles it.
+
+### The microstructure did not pay for it
+
+Normal scenario, 5×, `long_bias=0.5`, 5 seeds — the graded levels near the touch
+replaced a 200× cliff between level 0 and level 1, so the spread actually got
+*much* better:
+
+| | one-sided book | near depth | spread | hourly vol |
+|---|---|---|---|---|
+| old shape | 0.2% | 0.416 | 4.1e-5 (46× real) | 0.00292 |
+| **new shape** | **0.0%** | **0.404** | **1.0e-6 (1.15× real)** | **0.00279** |
+| real BTC | ~0% | 0.49 | 8.8e-7 | 0.00260 |
+
+`sanity.py` also moved toward real: kurtosis 8.83 → 11.12 (real ~10), vol
+clustering ACF1 0.076 → 0.130 (real ~0.27).
+
+### One trap, documented in the config
+
+`bg_inventory_limit_btc` must sit **above** the inventory ordinary two-way flow
+pushes onto the LP and **below** what a cascade delivers. The background flow
+caps its own inventory at `bg_flow_inventory_cap_btc` (5 BTC) and the LP is its
+counterparty, so the LP routinely carries ±5 BTC with nothing wrong. At a limit
+of **3** it stopped quoting in *calm* markets: one-sided book 9% of steps, median
+spread 1.0e-3 (~1000× real), local volatility 0.029 (~11× real). At 15 it is
+invisible in calm markets and still binds in a cascade; results are flat between
+15 and 40. `test_the_limit_must_exceed_what_ordinary_flow_pushes_onto_the_lp`
+guards this.
+
+### Why the risk metric used to be all-or-nothing
+
+Two causes, neither of them the leverage number itself.
+
+**Traders sold into their own losses.** `PositionTaker` re-targeted
+`leverage × equity / mark` on every act, so as equity fell it *reduced* its
+position to restore the target. That is a volatility-targeting strategy: it
+self-deleverages and is almost impossible to liquidate. The trace that showed it
+(stress, target 10×, seed 0):
+
+    step 301  price 94876  position 0.0940  equity 494.6  leverage 18.02
+    step 306  price 92266  position 0.0940  equity 352.6  leverage 24.88  <- worst
+    step 376  price 94964  position 0.0510  equity 484.8  leverage  9.99  <- sold
+
+It touched 24.88× and survived, then cut its position almost in half. Only at a
+20× target was the margin buffer (1/20 − 1% = 4%) thin enough that a fast move
+landed before the trader could rebalance. `rebalance="hold"` is now the default:
+size the position once from starting equity, then hold that many BTC, so
+leverage rises as equity falls. `rebalance="constant_leverage"` keeps the old
+behaviour, because *"do self-deleveraging traders cascade?"* is a real Phase-2
+question — it is just the wrong baseline.
+
+**Everyone had the same leverage, so everyone had the same liquidation price.**
+With maintenance margin at 1%, a held long needs roughly a (1/L − 1%) drop to
+breach: 48% at 2×, 19% at 5×, 9.1% at 10×, 4.0% at 20×. The stress path's index
+drawdown is ~8%, which sits *between* the 10× and 20× thresholds — so a uniform
+crowd gave nothing up to 10× and everything at 20×, with every breach landing in
+the same step (max liquidations per step equalled the number of distinct accounts
+liquidated). Leverage is now drawn per trader, lognormal around the median
+(`leverage_sigma=0.6`, clipped to 1–20×), which spreads the thresholds out.
+`leverage_sigma=0` reproduces a uniform crowd.
+
+Distinct accounts liquidated, stress, `long_bias=0.7`, 3 seeds, 600 steps:
+
+| median leverage | 2× | 3× | 5× | 8× | 10× | 15× | 20× | levels responding |
+|---|---|---|---|---|---|---|---|---|
+| constant leverage, uniform (old) | 0 | 0 | 0 | 0 | 0 | 20.0 | 35.0 | **2/7** |
+| hold, uniform | 0 | 0 | 0 | 0 | 0 | 35.0 | 35.0 | 2/7 |
+| **hold + dispersed (new)** | 0 | 0.7 | 2.0 | 9.0 | 18.0 | 27.0 | 31.3 | **6/7** |
+
+Hold mode alone does not help — it makes the cliff *more* severe when it fires
+(bad debt $6,544 at 15× against $34 before). Dispersion is what makes the
+response graded. Both together also spread the breaches over time: at 10×, 18
+accounts liquidate across 7.3 steps with at most 15.7 in any one step, instead of
+all of them at once.
+
+Bad debt responds smoothly too: $0, $0, $115, $889, $2,252, $7,444, $11,752.
+
+Calm-market microstructure is unchanged by this (normal, median 5×, 5 seeds:
+one-sided 0.0%, near depth 0.403, spread 1.01e-6, hourly vol 0.00273), and
+amplification improved, because holding traders no longer push the price down on
+their own: at 10× the dip is −2.99% with liquidations and −0.10% without, so
+−2.89 pp of it is now attributable to forced selling (it was −1.26 pp).
+
+### What the flow can and cannot reproduce
+
+The background flow used to draw heavy-tailed order sizes and then **renormalise
+them so each minute's total equalled `bg_flow_btc_per_min`**. That pinned volume
+at 0.170 BTC/min at *both* 2.2 and 80 orders/min, with three consequences: no
+volume dispersion and so no volume/volatility relationship; a
+volatility-excitement modulator that added no volume at all, only more and
+smaller orders; and, at 80 orders/min, ~73% of draws pushed below the lot size
+and silently dropped. Phase-0 validation measured a price-impact R² of 0.04
+against 0.36 in real data — regressing price change on an order flow whose total
+is constant by construction.
+
+Now the **distribution** is calibrated once and each minute's volume is whatever
+the draws give. Sizes keep their real shape (median 0.002 BTC = 2 lots; σ = 2.754
+= √(2 ln 44.4), the real mean/median ratio) and the arrival rate is *derived* so
+expected volume per minute hits the target.
+
+Two bugs surfaced while doing it. The excitement multiplier was never centred, so
+it inflated total volume instead of redistributing it across time: for a normal
+move E|z| = √(2/π) = 0.798, giving a mean multiplier of 1 + 2.0×0.798 = 2.60, and
+measured volume came out **2.57×** the target. It is now mean-preserving, the same
+way `index_price.py` already centres its AR(1) vol multiplier. And the derived
+rate lands near 7/min rather than the depth-scaled real count of 2.19/min — the
+gap is exactly the size tail the cap removes.
+
+### Three anchors that cannot all hold at once
+
+Worth stating plainly, because Phase 0 kept rediscovering it as a bug:
+
+* near depth 0.49 BTC/side (real 123 × the 0.004 scale),
+* volume 0.194 BTC/min (real 48.5 × 0.004),
+* the real trade-size *shape* (median 0.002 BTC, mean/median 44.4).
+
+`volume/depth` survives the scaling (real 48.5/123 = 0.394; sim 0.194/0.49 =
+0.396). `mean trade size / depth` does not: real is 0.0887/123 = 0.00072, and
+keeping real-scale sizes in a 0.49 BTC book gives 0.181 — **251× more impactful
+per order**. Preserving it instead would need a mean trade of 0.00035 BTC, which
+is 0.35 lots: **below the exchange's own grid**. At a 0.004 scale the mini-market
+is finer than its 0.001 BTC lot size, and a 0.5 BTC order is already the whole
+near book. So the size tail cannot be as heavy as real, and the cap must do the
+truncating — it removes about 64% of the distribution's mean.
+
+### The cap is the dial, and here is what it buys
+
+Normal scenario, median 5×, 5 seeds, 600 steps:
+
+| cap | rate | BTC/min | vol CV | vol~\|r\| | impact R² | kurtosis | vol ACF1 | hourly vol | spread |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.5 | 6.0 | 0.200 | 1.36 | 0.49 | 0.180 | 43.4 | 0.381 | 0.0083 | 1.0e-6 |
+| **0.3** | **7.4** | **0.202** | **1.12** | **0.48** | **0.202** | **13.0** | **0.338** | **0.0052** | **1.2e-4** |
+| 0.2 | 8.7 | 0.201 | 1.00 | 0.48 | 0.129 | 13.6 | 0.232 | 0.0042 | 2.0e-4 |
+| 0.1 | 12.0 | 0.196 | 0.85 | 0.46 | 0.098 | 9.8 | 0.162 | 0.0036 | 1.2e-4 |
+| 0.05 | 17.0 | 0.197 | 0.75 | 0.46 | 0.054 | 8.2 | 0.144 | 0.0032 | 4.1e-5 |
+| *real BTC* | *2.2* | *0.194* | *~1.0* | *>0* | *0.360* | *10.6* | *0.275* | *0.0026* | *8.8e-7* |
+| *old (renormalised)* | *80* | *0.163* | *0.26* | *0.08* | *0.006* | *9.8* | *0.109* | *0.0027* | *1.0e-6* |
+
+0.3 is the default: best impact R² of any setting, kurtosis 13.0 against 43.4 at
+the old cap, and the closest volatility clustering. **Be honest about the cost in
+the write-up:** against the old flow, hourly volatility goes from 1.05× real to
+2.0×, and median spread from 1.15× to 138×. The old spread and volatility
+matched *because the flow had no price effect at all* — a market whose order flow
+cannot move the price trivially inherits its volatility from the index. Those two
+numbers got worse because impact started existing.
+
+The liquidation response is unaffected by the cap (distinct accounts liquidated
+at 2×/5×/10×/20×: 0.0/2.7/18.0/31.3 at cap 0.5, 0.0/3.0/18.0/31.3 at cap 0.1),
+because liquidations are driven by the index path and the median mark rule, not
+by local flow noise. So this change does not move the headline risk metric.
+
+### Reach sets the maximum representable cascade depth
+
+The dip floor tracks the ladder's reach almost exactly (stress, 20×, 3 seeds):
+
+| growth | levels | reach | dip ON | dip OFF | amplification |
+|---|---|---|---|---|---|
+| 1.18 | 20 | 2.47% | −3.07% | −1.80% | −1.27 pp |
+| 1.25 | 20 | 5.47% | −6.74% | −5.36% | −1.38 pp |
+| 1.18 | 28 | 9.58% | −11.70% | −6.94% | −4.75 pp |
+
+The default stays at 2.47% because it gives the best calm-market microstructure.
+If you need deeper cascades — the real 10 Oct drawdown was 15% — raise
+`bg_level_gap_growth` or `bg_levels`, and re-check the calm-market table above,
+because a wider reach puts more of the book in the tail.
