@@ -23,9 +23,14 @@ dynamics beyond stylized facts. Three specific checks:
 These metrics address TA Q6: "the calibration matches stylized facts, but
 does the simulator reproduce cascade dynamics and price impact realistically?"
 
+Simulator setup: built by data/scripts/sim_setup.py, the same config and
+population as run_calibration.run_one (reference population, background flow on,
+AR(1) volatility clustering on). Do not build a separate SimConfig here;
+perp_sim/tests/test_script_config_alignment.py fails if this script drifts.
+
 Usage:
   python validate_cascade_impact.py
-  python validate_cascade_impact.py --scenario stress-thin-early --seeds 5
+  python validate_cascade_impact.py --scenario stress-thin-synthetic-no-event --seeds 5
 """
 
 import os
@@ -43,9 +48,10 @@ PERP_SIM_DIR = os.path.join(REPO_ROOT, "perp_sim")
 PROCESSED_DIR = os.path.normpath(os.path.join(REPO_ROOT, "data", "processed"))
 
 sys.path.insert(0, PERP_SIM_DIR)
+sys.path.insert(0, SCRIPT_DIR)
 
-from engine import SimConfig, Exchange, SCENARIOS
-from baseline_crowd import make_crowd, open_accounts
+from engine import SCENARIOS
+import sim_setup
 
 DEFAULT_SEEDS = [42, 123, 456, 789, 2025]
 
@@ -223,25 +229,8 @@ def run_one(scenario_name, seed, n_steps, n_bots):
         print(f"[error] scenario '{scenario_name}' not found")
         return None
 
-    cfg = SimConfig(
-        n_steps=n_steps,
-        step_minutes=1.0,
-        seed=seed,
-        initial_collateral=1000.0,
-        bg_flow_enabled=True,
-        bg_backstop_only=True,
-    )
-
-    exchange = Exchange(cfg, scenario)
-    population = make_crowd(seed, n_total=n_bots)
-    open_accounts(exchange, population)
-    bots = population.bots
-
-    for _ in range(n_steps):
-        actions = []
-        for bot in bots:
-            actions += bot.act(exchange.view(bot.account_id))
-        exchange.step(actions)
+    # Same config and population as run_calibration.run_one (see sim_setup.py).
+    exchange, cfg = sim_setup.run(scenario, seed, n_steps, n_bots)
 
     recs = exchange.records
 
