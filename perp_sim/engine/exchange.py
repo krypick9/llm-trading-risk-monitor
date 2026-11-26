@@ -131,6 +131,7 @@ class Exchange:
         self.index_history = [cfg.initial_price]
         self.price_history = [cfg.initial_price]
         self.bad_debt = 0.0
+        self.bg_absorbed_step = {BUY: 0.0, SELL: 0.0}   # LP fills this step, per side
         self.premium_buffer = []
         self.last_funding_rate = 0.0
         self.last_liq_count = 0
@@ -240,6 +241,7 @@ class Exchange:
         self.index_price = self.index.next(t)
         self.index_history.append(self.index_price)
         self.book.expire(t)
+        self.bg_absorbed_step = {BUY: 0.0, SELL: 0.0}
         self._requote_background(t, stats)
 
         for action in actions:
@@ -248,8 +250,18 @@ class Exchange:
         requests = [a for a in actions if isinstance(a, OrderRequest)]
         requests += self._background_flow_orders(t)
         self.rng_arrival.shuffle(requests)
-        for request in requests:
-            self._handle_request(request, t, stats)
+
+        # The minute is processed in sub-steps, with the LP refreshing its
+        # quotes before each one. A real maker replenishes in milliseconds; this
+        # engine used to re-quote once per minute and then let a whole minute of
+        # flow trade against a book nobody refilled, so the end-of-step snapshot
+        # measured "the book after a minute with no replenishment" -- median
+        # quoted spread came out ~138x real. See README.
+        for i, chunk in enumerate(self._arrival_chunks(requests)):
+            if i:                           # the first ladder is already up
+                self._requote_background(t, stats)
+            for request in chunk:
+                self._handle_request(request, t, stats)
 
         events = self._run_liquidations(t, stats) if cfg.liquidations_enabled else []
         self.last_liq_count = len(events)
@@ -266,6 +278,18 @@ class Exchange:
         record = self._make_record(t, stats, events, settled, prev_last, prev_index)
         self.records.append(record)
         return record
+
+    def _arrival_chunks(self, requests: list) -> list:
+        """Split the step's arrivals into `bg_requotes_per_step` slices.
+
+        Always returns at least one slice, even when nobody traded, so the LP
+        still re-quotes on a quiet minute. With bg_requotes_per_step = 1 the
+        behaviour is the old one-requote-per-minute, kept for comparison."""
+        k = max(1, self.cfg.bg_requotes_per_step)
+        if k == 1 or len(requests) <= 1:
+            return [requests]
+        size = math.ceil(len(requests) / k)
+        return [requests[i:i + size] for i in range(0, len(requests), size)]
 
     # ---- background taker flow --------------------------------------------
     def _background_flow_orders(self, t: int) -> list:
@@ -331,6 +355,9 @@ class Exchange:
             value = f.price * f.qty
             self.accounts[f.taker_account].apply_fill(f.taker_side, f.qty, f.price, cfg.taker_fee * value)
             self.accounts[f.maker_account].apply_fill(-f.taker_side, f.qty, f.price, cfg.maker_fee * value)
+            if f.maker_account == BG_ID:
+                # the LP bought when it was the maker on a taker SELL
+                self.bg_absorbed_step[BUY if f.taker_side == SELL else SELL] += f.qty
             self.last_price = f.price
             stats.volume += f.qty
             stats.signed += f.taker_side * f.qty
@@ -391,15 +418,36 @@ class Exchange:
     def _bg_inventory_scales(self) -> tuple:
         """How much of the ladder the LP is still willing to show on each side.
 
-        It tapers linearly with the inventory it is carrying and reaches zero on
-        the side that would add to a full book: as forced selling makes the LP
-        longer and longer, its bids thin out and then stop, which is how the bid
-        side can genuinely run out. Returns (bid_scale, ask_scale)."""
+        Two independent limits:
+
+        Inventory -- the scale tapers linearly with the position the LP is
+        carrying and reaches zero on the side that would add to a full book, so
+        forced selling can genuinely run out of bids.
+
+        Per-step capacity -- how much the LP will absorb on one side within one
+        step, regardless of how many times it re-quotes inside that step. This
+        is what stops intra-step replenishment from multiplying the market's
+        liquidity: re-quoting restores the book's SHAPE (which keeps the spread
+        tight, as a real maker does in milliseconds) without restoring its
+        CAPACITY (which would mean a minute's flow trades against k ladders and
+        moves no price). Without it, going from 1 to 6 re-quotes per step cut
+        price-impact R^2 from 0.184 to 0.017 and volatility clustering from
+        0.402 to 0.072, because an unbounded LP refilling six times a minute
+        absorbs everything without the price moving.
+
+        Returns (bid_scale, ask_scale)."""
+        bid = ask = 1.0
         limit = self.cfg.bg_inventory_limit_btc
-        if not limit or limit <= 0:
-            return 1.0, 1.0
-        frac = max(-1.0, min(1.0, self.accounts[BG_ID].position / limit))
-        return max(0.0, 1.0 - max(0.0, frac)), max(0.0, 1.0 - max(0.0, -frac))
+        if limit and limit > 0:
+            frac = max(-1.0, min(1.0, self.accounts[BG_ID].position / limit))
+            bid = max(0.0, 1.0 - max(0.0, frac))
+            ask = max(0.0, 1.0 - max(0.0, -frac))
+
+        capacity = self.cfg.bg_capacity_per_step_btc
+        if capacity and capacity > 0:
+            bid *= max(0.0, 1.0 - self.bg_absorbed_step[BUY] / capacity)
+            ask *= max(0.0, 1.0 - self.bg_absorbed_step[SELL] / capacity)
+        return bid, ask
 
     # ---- liquidation engine -----------------------------------------------
     def _run_liquidations(self, t: int, stats: _Stats) -> list:

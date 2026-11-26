@@ -489,6 +489,69 @@ class LPInventoryTests(unittest.TestCase):
         self.assertGreater(cfg.bg_inventory_limit_btc, 2 * cfg.bg_flow_inventory_cap_btc)
 
 
+class IntraStepReplenishmentTests(unittest.TestCase):
+    """Available, and OFF by default. See README "Intra-step replenishment:
+    measured, and not adopted" for why."""
+
+    def test_off_by_default(self):
+        cfg = SimConfig()
+        self.assertEqual(cfg.bg_requotes_per_step, 1)
+        self.assertIsNone(cfg.bg_capacity_per_step_btc)
+
+    def test_defaults_change_nothing(self):
+        """The feature must be purely additive: with it off, the engine must
+        produce exactly the path it produced before the feature existed."""
+        from run import run as run_sim
+        a, _ = run_sim("normal", 120, seed=0)
+        b, _ = run_sim("normal", 120, seed=0,
+                       cfg_overrides={"bg_requotes_per_step": 1,
+                                      "bg_capacity_per_step_btc": None})
+        self.assertEqual([r.last_price for r in a.records],
+                         [r.last_price for r in b.records])
+
+    def test_more_requotes_tighten_the_spread(self):
+        """The one thing it does reliably: the end-of-step book is no longer
+        'a minute of trading against a ladder nobody refilled'."""
+        import statistics as stats
+        from run import run as run_sim
+
+        def spread(k):
+            ex, _ = run_sim("normal", 600, seed=0,
+                            cfg_overrides={"bg_requotes_per_step": k})
+            vals = [r.spread_rel for r in ex.records if r.spread_rel > 0]
+            return stats.median(vals)
+
+        self.assertLess(spread(6), spread(1) / 10)
+
+    def test_chunking_covers_every_request_exactly_once(self):
+        ex = Exchange(SimConfig(n_steps=5, bg_requotes_per_step=4), get_scenario("normal"))
+        for n in (0, 1, 3, 7, 9, 40):
+            requests = list(range(n))
+            chunks = ex._arrival_chunks(requests)
+            self.assertGreaterEqual(len(chunks), 1)
+            flat = [x for c in chunks for x in c]
+            self.assertEqual(flat, requests)
+
+    def test_a_quiet_minute_still_requotes(self):
+        ex = Exchange(SimConfig(n_steps=5, bg_requotes_per_step=4), get_scenario("normal"))
+        self.assertEqual(ex._arrival_chunks([]), [[]])
+
+    def test_capacity_taper_stops_the_lp_absorbing_without_limit(self):
+        ex = Exchange(SimConfig(n_steps=5, bg_capacity_per_step_btc=1.0,
+                                bg_inventory_limit_btc=None), get_scenario("normal"))
+        self.assertEqual(ex._bg_inventory_scales(), (1.0, 1.0))
+        ex.bg_absorbed_step[BUY] = 0.5
+        self.assertAlmostEqual(ex._bg_inventory_scales()[0], 0.5)
+        ex.bg_absorbed_step[BUY] = 1.0
+        self.assertEqual(ex._bg_inventory_scales()[0], 0.0)   # out of ammunition
+
+    def test_absorption_resets_each_step(self):
+        ex = Exchange(SimConfig(n_steps=5, bg_capacity_per_step_btc=1.0), get_scenario("normal"))
+        ex.bg_absorbed_step[BUY] = 99.0
+        ex.step([])
+        self.assertLess(ex.bg_absorbed_step[BUY], 99.0)
+
+
 class CascadeAmplificationTests(unittest.TestCase):
     def test_forced_selling_now_deepens_the_dip(self):
         """The whole point of the ladder fix: the same run with liquidations on

@@ -169,14 +169,11 @@ the same scale as the book ($1,000 × 50 instead of $5k–20k × 100).
   guards it); the anchor is the remaining pin, and it is worth a sensitivity run
   before Phase 1.
 
-- **Quoted spread degrades when the flow is aggressive**, and this is the
-  once-per-minute LP replenishment limit becoming visible rather than a flow
-  problem. `spread_rel` is recorded at the end of a step, after a minute of
-  trading against a ladder that is only re-quoted at the START of the next step,
-  so it measures "the book after a minute with no replenishment". Real books
-  refill in milliseconds. Median spread is 1.2e-4 against a real 8.8e-7. The fix
-  is intra-step replenishment (re-quote every k orders, or k sub-steps per
-  minute), and it is the next thing I would do.
+- **Median quoted spread is ~138x real, and it cannot be fixed without losing
+  price impact.** This was measured, not assumed: see "Intra-step replenishment:
+  measured, and not adopted" below. The two are opposite ends of one dial as
+  long as the only liquidity in the market is a single unbounded LP. The
+  structural fix is several *finite* liquidity providers, not more replenishment.
 
 - **Liquidation mechanics are simplified in a direction that inflates severity**:
   full-size market IOC at any price, with no bankruptcy-price cap, no partial
@@ -412,6 +409,57 @@ The liquidation response is unaffected by the cap (distinct accounts liquidated
 at 2×/5×/10×/20×: 0.0/2.7/18.0/31.3 at cap 0.5, 0.0/3.0/18.0/31.3 at cap 0.1),
 because liquidations are driven by the index path and the median mark rule, not
 by local flow noise. So this change does not move the headline risk metric.
+
+### Intra-step replenishment: measured, and not adopted
+
+The LP re-quotes once per step, so the end-of-step snapshot measures "the book
+after a minute of trading against a ladder nobody refilled". Real makers
+replenish in milliseconds, and median quoted spread here is ~138x real, so
+splitting the minute into sub-steps with a re-quote before each looked like an
+obvious fix. It is implemented (`bg_requotes_per_step`) and it is **off by
+default**, because it is not an improvement.
+
+Normal scenario, 5 seeds, 600 steps:
+
+| re-quotes/step | volume | vol CV | vol~\|r\| | impact R² | kurtosis | vol ACF1 | hourly vol | spread | depth |
+|---|---|---|---|---|---|---|---|---|---|
+| **1 (default)** | 0.203 | 1.12 | **0.45** | **0.184** | 25.8 | **0.402** | 0.0055 | 1.0e-4 | 0.396 |
+| 2 | 0.202 | 1.11 | 0.31 | 0.066 | **10.1** | 0.205 | 0.0039 | **1.0e-6** | 0.442 |
+| 4 | 0.203 | 1.11 | 0.24 | 0.017 | 9.1 | 0.092 | 0.0035 | 1.0e-6 | 0.450 |
+| 6 | 0.203 | 1.13 | 0.23 | 0.017 | 9.2 | 0.072 | **0.0035** | 1.0e-6 | **0.444** |
+| *real BTC* | *0.194* | *~1.0* | *>0* | *0.360* | *10.6* | *0.275* | *0.0026* | *8.8e-7* | *0.49* |
+
+It fixes the spread completely (1.0e-4 → 1.0e-6, i.e. 1.15x real) and improves
+depth, kurtosis and the volatility level. It also **cuts price-impact R² by 10x
+and volatility clustering by 5x**, and weakens the volume/volatility
+relationship. That is a worse trade for this project: impact and slippage are
+dependent variables, spread is a validation target.
+
+The reason is that re-quoting the whole ladder each sub-step multiplies the
+market's liquidity per minute by k. An LP with an unbounded balance sheet that
+refills six times a minute absorbs the flow without the price moving, so signed
+volume explains nothing and local volatility falls toward index volatility
+(0.0035 against an index 0.0026).
+
+A second attempt bounded the LP's absorption per step instead
+(`bg_capacity_per_step_btc`), so that re-quoting restores the book's *shape*
+without restoring its *capacity*. It does not recover impact either, and it
+introduces episodic book collapse — at k=6 with a 0.5 BTC budget: R² 0.046,
+kurtosis 86.1, one-sided book 3.6% of steps; at 0.2 BTC, one-sided 30%. Also
+implemented, also off by default.
+
+**The conclusion is the useful part.** Spread realism and impact realism are two
+ends of one dial while the only liquidity source is a single unbounded LP, and no
+amount of replenishment tuning separates them. Separating them needs liquidity
+that is *finite and strategic* — several makers with their own capital and
+inventory limits, who widen and withdraw on their own account. That is precisely
+what the minimal cut removed when it dropped MakerBots, and this measurement is
+the cost of that decision. Reinstating a maker archetype is the next real
+improvement to the market model; `bg_requotes_per_step` would then be worth
+revisiting, because the spread cost of once-a-minute re-quoting is real.
+
+Both dials stay in the code, documented and tested, so the comparison can be
+re-run rather than re-derived.
 
 ### Reach sets the maximum representable cascade depth
 

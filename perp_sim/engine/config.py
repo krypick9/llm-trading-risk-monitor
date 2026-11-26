@@ -64,6 +64,19 @@ class SimConfig:
     bg_anchor_strength: float = 0.8
     bg_walkaway_threshold: float = 0.01   # LP retreats on a >1% move over 5 steps
 
+    # ---- how often the LP refreshes its quotes inside one step -----------
+    # A real maker replenishes in milliseconds. This engine used to re-quote
+    # once per minute and then let a whole minute of flow trade against a book
+    # nobody refilled, so the end-of-step snapshot measured "the book after a
+    # minute with no replenishment" and median quoted spread came out ~138x
+    # real. The step's arrivals are now split into this many slices with a
+    # re-quote before each. 1 reproduces the old behaviour.
+    #
+    # Liquidations still run AFTER every slice and are followed by no re-quote,
+    # so the depth collapse a cascade causes stays visible in the record -- that
+    # is a Phase-3 warning signal and must not be papered over.
+    bg_requotes_per_step: int = 1
+
     # ---- the shape of the quoted ladder ----------------------------------
     # The ladder's PRICE REACH, not just its size, decides whether a cascade is
     # representable at all. With the old uniform ladder (5 levels, flat 0.0002
@@ -110,6 +123,25 @@ class SimConfig:
     # flat between 15 and 40, so this is not a knife-edge.
     # If you change bg_flow_inventory_cap_btc, re-check this.
     bg_inventory_limit_btc: float | None = 15.0
+
+    # ---- how much the LP absorbs within ONE step -------------------------
+    # Separate from the inventory limit, and the reason intra-step re-quoting
+    # does not simply hand the market k times the liquidity. Re-quoting restores
+    # the book's SHAPE; this bounds its CAPACITY per step. The LP's quoted size
+    # tapers to zero on a side once it has absorbed this much there within the
+    # step, and resets next step.
+    #
+    # Without it, raising bg_requotes_per_step from 1 to 6 fixed the spread
+    # (1.0e-4 -> 1.0e-6) but cut price-impact R^2 from 0.184 to 0.017 and
+    # volatility clustering from 0.402 to 0.072: a minute's flow was trading
+    # against six ladders drawn from an unbounded balance sheet, so nothing
+    # moved the price and local volatility fell toward index volatility.
+    #
+    # Scale: real BTC trades 48.5 BTC/min against ~123 BTC of near depth
+    # (0.394), and the mini-market matches that ratio (0.194/0.49 = 0.396). So
+    # per-step absorption should be comparable to near depth, not a multiple of
+    # it. None = unlimited (the old behaviour).
+    bg_capacity_per_step_btc: float | None = None
 
     # ---- background taker flow (the demand side; see engine/flow.py) ------
     # Anonymous aggressive orders so the last price actually moves on trades.
