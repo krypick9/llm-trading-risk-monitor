@@ -1,5 +1,5 @@
 import os, sys
-_PERP_SIM = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "perp_sim"))
+_PERP_SIM = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "legacy", "perp_sim_phase0"))
 if _PERP_SIM not in sys.path:
     sys.path.insert(0, _PERP_SIM)
 from population import PopulationSpec, add_accounts, build_population

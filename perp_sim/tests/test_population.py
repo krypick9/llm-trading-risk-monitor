@@ -1,14 +1,24 @@
-import dataclasses
-import unittest
-from collections import Counter
+"""The replace-not-add guarantee -- the one the causal claim rests on.
 
-from engine import SCENARIOS
-from population import PopulationSpec, add_accounts, build_population, make_slots
-from run_baseline import run
+Ported back from the Phase-0 suite after review. The minimal version shipped
+only a determinism check (it built n_llm=0 twice), which does NOT test the
+invariant that matters: that the slots, and every un-swapped trader, are
+identical whatever n_llm is. These tests exercise n_llm > 0.
+
+If any test here fails, a measured difference between an n_llm=0 control and an
+n_llm=k treatment could come from the market changing rather than from who is
+deciding -- which would invalidate the Phase-1 result.
+"""
+
+import unittest
+
+from population import PopulationSpec, build_population, make_slots
+from run import run
 
 
 class InertAgent:
-    """Stands in for an LLM agent in tests: holds the slot's account and never trades."""
+    """Stands in for an LLM agent: holds the slot's account and never trades."""
+
     kind = "llm"
 
     def __init__(self, account_id):
@@ -22,125 +32,163 @@ def inert_factory(slot, seed):
     return InertAgent(slot.account_id)
 
 
-def slot_signature(slots):
-    return [(s.index, s.kind, s.account_id, s.cash, s.leverage, s.params, s.swap_rank) for s in slots]
+def signature(slots):
+    return [(s.index, s.account_id, s.cash, s.leverage, s.direction, s.swap_rank)
+            for s in slots]
+
+
+SPEC = PopulationSpec()
+
+
+def _fake_view_sequence(account_id, n=60):
+    """A fixed, condition-independent view sequence to drive a trader through.
+
+    Deliberately not taken from a live run: the point is to hold the market
+    constant so any difference in behaviour must come from the trader.
+    """
+    from engine import MarketView, OwnView
+
+    views, price = [], 100_000.0
+    history = [price]
+    for step in range(1, n + 1):
+        price *= 1.0 + (0.0004 if step % 3 else -0.0006)   # deterministic zig-zag
+        history.append(price)
+        views.append(MarketView(
+            step=step, minute=float(step), index_price=price, last_price=price,
+            mark_price=price, best_bid=price - 0.1, best_ask=price + 0.1, mid=price,
+            depth_bid=0.5, depth_ask=0.5, funding_rate_est=0.0, last_funding_rate=0.0,
+            steps_to_funding=60 - (step % 60), open_interest=1.0,
+            liq_count_last_step=0, liq_notional_last_step=0.0,
+            price_history=list(history),
+            own=OwnView(account_id=account_id, collateral=1000.0, equity=1000.0,
+                        position=0.0, entry_price=0.0, leverage=0.0,
+                        margin_buffer=None, liquidation_price=None, open_orders=0),
+        ))
+    return views
+
+
+def _as_tuple(actions):
+    return tuple((a.account_id, a.side, round(a.qty, 8),
+                  None if a.price is None else round(a.price, 4), a.tif)
+                 for a in actions)
 
 
 class SlotTests(unittest.TestCase):
-    def test_counts_follow_the_mix(self):
-        slots = make_slots(1)
-        self.assertEqual(len(slots), 100)
-        self.assertEqual(Counter(s.kind for s in slots),
-                         {"noise": 45, "trend": 20, "contrarian": 10, "value": 15, "maker": 10})
-
-    def test_account_ids_are_unique(self):
-        slots = make_slots(1)
+    def test_slot_count_and_unique_ids(self):
+        slots = make_slots(1, SPEC)
+        self.assertEqual(len(slots), SPEC.m_traders)
         self.assertEqual(len({s.account_id for s in slots}), len(slots))
 
-    def test_an_awkward_size_still_adds_up(self):
-        self.assertEqual(len(make_slots(1, PopulationSpec(m_traders=37))), 37)
-
-    def test_a_mix_that_does_not_add_to_one_is_rejected(self):
-        with self.assertRaises(ValueError):
-            make_slots(1, PopulationSpec(mix=(("noise", 0.5), ("trend", 0.4))))
-
     def test_slots_depend_only_on_the_seed(self):
-        self.assertEqual(slot_signature(make_slots(3)), slot_signature(make_slots(3)))
-        self.assertNotEqual([s.cash for s in make_slots(3)], [s.cash for s in make_slots(4)])
+        self.assertEqual(signature(make_slots(3, SPEC)), signature(make_slots(3, SPEC)))
+        self.assertNotEqual([s.direction for s in make_slots(3, SPEC)],
+                            [s.direction for s in make_slots(4, SPEC)])
 
     def test_slots_do_not_depend_on_how_many_llm_agents(self):
-        control = build_population(3)
-        swapped = build_population(3, n_llm=10, llm_factory=inert_factory)
-        self.assertEqual(slot_signature(control.slots), slot_signature(swapped.slots))
+        """The core invariant: swapping in agents must not change the slots."""
+        control = build_population(3, SPEC, n_llm=0)
+        for k in (1, 10, SPEC.m_traders):
+            swapped = build_population(3, SPEC, n_llm=k, llm_factory=inert_factory)
+            self.assertEqual(signature(control.slots), signature(swapped.slots),
+                             f"slots changed at n_llm={k}")
+
+    def test_total_capital_is_constant_across_conditions(self):
+        for k in (0, 5, 25, SPEC.m_traders):
+            pop = build_population(3, SPEC, n_llm=k, llm_factory=inert_factory)
+            self.assertAlmostEqual(sum(s.cash for s in pop.slots),
+                                   SPEC.m_traders * SPEC.collateral, places=6)
+
+    def test_long_short_balance_is_constant_across_conditions(self):
+        control = sum(s.direction for s in build_population(3, SPEC, n_llm=0).slots)
+        for k in (5, 25):
+            pop = build_population(3, SPEC, n_llm=k, llm_factory=inert_factory)
+            self.assertEqual(sum(s.direction for s in pop.slots), control)
 
 
 class SwapTests(unittest.TestCase):
     def test_exactly_n_llm_slots_are_swapped_and_they_are_the_first_in_order(self):
-        pop = build_population(3, n_llm=10, llm_factory=inert_factory)
+        pop = build_population(3, SPEC, n_llm=10, llm_factory=inert_factory)
         first_ten = {s.account_id for s in sorted(pop.slots, key=lambda s: s.swap_rank)[:10]}
         self.assertEqual(pop.llm_ids, first_ten)
-        self.assertEqual(sum(isinstance(b, InertAgent) for b in pop.bots), 10)
-        self.assertEqual(len(pop.bots), 100)
+        self.assertEqual(sum(isinstance(t, InertAgent) for t in pop.traders), 10)
+        self.assertEqual(len(pop.traders), SPEC.m_traders)
 
-    def test_swaps_are_nested_so_neighbouring_points_differ_only_by_the_extra_agents(self):
-        small = build_population(3, n_llm=5, llm_factory=inert_factory).llm_ids
-        large = build_population(3, n_llm=10, llm_factory=inert_factory).llm_ids
+    def test_swaps_are_nested(self):
+        """n_llm=5 must be a subset of n_llm=10, so neighbouring points on the
+        risk curve differ only by the extra agents."""
+        small = build_population(3, SPEC, n_llm=5, llm_factory=inert_factory).llm_ids
+        large = build_population(3, SPEC, n_llm=10, llm_factory=inert_factory).llm_ids
         self.assertTrue(small < large)
 
-    def test_swaps_are_spread_across_trader_types(self):
-        pop = build_population(3, n_llm=10, llm_factory=inert_factory)
-        kind_of = {s.account_id: s.kind for s in pop.slots}
-        swapped = Counter(kind_of[a] for a in pop.llm_ids)
-        for kind, share in PopulationSpec().mix:
-            self.assertLessEqual(abs(swapped[kind] - share * 10), 1.0, kind)
+    def test_groups_label_every_slot(self):
+        pop = build_population(3, SPEC, n_llm=10, llm_factory=inert_factory)
+        groups = pop.groups()
+        self.assertEqual(len(groups), SPEC.m_traders)
+        self.assertEqual(sum(1 for v in groups.values() if v == "llm"), 10)
 
-    def test_control_has_no_llm_agents(self):
-        pop = build_population(3)
-        self.assertEqual(pop.llm_ids, set())
-        self.assertEqual(set(pop.groups().values()), {"normal"})
-
-    def test_bad_requests_are_refused(self):
+    def test_an_agent_must_use_its_slot_account(self):
         with self.assertRaises(ValueError):
-            build_population(3, n_llm=1)                       # no factory
+            build_population(3, SPEC, n_llm=1,
+                             llm_factory=lambda slot, seed: InertAgent("someone-else"))
+
+    def test_rejects_impossible_agent_counts(self):
         with self.assertRaises(ValueError):
-            build_population(3, n_llm=101, llm_factory=inert_factory)
+            build_population(3, SPEC, n_llm=1)                      # no factory
         with self.assertRaises(ValueError):
-            build_population(3, n_llm=-1, llm_factory=inert_factory)
-
-    def test_an_agent_must_use_the_slot_account(self):
+            build_population(3, SPEC, n_llm=SPEC.m_traders + 1, llm_factory=inert_factory)
         with self.assertRaises(ValueError):
-            build_population(3, n_llm=1, llm_factory=lambda slot, seed: InertAgent("someone-else"))
-
-    def test_llm_agents_start_with_the_same_cash_as_the_traders_they_replace(self):
-        from engine import Exchange, SimConfig
-        cash = {}
-        for n in (0, 10):
-            pop = build_population(3, n_llm=n, llm_factory=inert_factory)
-            ex = Exchange(SimConfig(n_steps=5, seed=3), SCENARIOS["normal-thick-synthetic-no-event"])
-            add_accounts(ex, pop)
-            cash[n] = {a: acct.collateral for a, acct in ex.accounts.items()}
-        self.assertEqual(cash[0], cash[10])
+            build_population(3, SPEC, n_llm=-1, llm_factory=inert_factory)
 
 
-class BaselineBehaviourTests(unittest.TestCase):
-    def test_traders_that_are_not_swapped_act_the_same_in_every_condition(self):
-        control, _ = run("stress-thin-synthetic-no-event", 3, n_steps=1)
-        swapped, pop = run("stress-thin-synthetic-no-event", 3, n_llm=10, n_steps=1, llm_factory=inert_factory)
+class UnswappedTradersAreUnaffectedTests(unittest.TestCase):
+    def test_an_unswapped_trader_has_the_same_decision_rule_whatever_n_llm_is(self):
+        """A scripted trader that was not replaced must be the SAME trader.
 
-        def orders(exchange, keep):
-            return sorted(o for o in exchange.order_log if o[1] in keep)
+        Note what this can and cannot claim. Its orders in a live run are not
+        identical across conditions, and should not be: the agents that were
+        swapped in trade differently, so the market state the survivor reacts to
+        genuinely differs from step 2 onward. What must be invariant is the
+        trader itself -- its parameters and its random stream, which is keyed on
+        (seed, account id) and never on its position in the list. So we drive the
+        two copies through an IDENTICAL view sequence and require identical
+        actions. That is the guarantee; a difference here would mean n_llm
+        changes the control traders, not just the market."""
+        control = build_population(5, SPEC, n_llm=0)
+        treated = build_population(5, SPEC, n_llm=10, llm_factory=inert_factory)
+        survivor = next(s.account_id for s in treated.slots
+                        if s.account_id not in treated.llm_ids)
+        a = next(t for t in control.traders if t.account_id == survivor)
+        b = next(t for t in treated.traders if t.account_id == survivor)
 
-        kept = {s.account_id for s in pop.slots} - pop.llm_ids
-        self.assertTrue(orders(control, kept))                  # they really did trade
-        self.assertEqual(orders(control, kept), orders(swapped, kept))
+        self.assertEqual((a.direction, a.target_leverage, a.act_prob, a.momentum),
+                         (b.direction, b.target_leverage, b.act_prob, b.momentum))
 
-    def test_noise_traders_send_small_heavy_tailed_balanced_orders(self):
-        spec = PopulationSpec(m_traders=40, mix=(("noise", 1.0),))
-        exchange, _ = run("normal-thick-synthetic-no-event", 1, spec=spec, n_steps=60)
-        sizes = sorted(o[3] for o in exchange.order_log)
-        self.assertGreater(len(sizes), 200)
-        median, mean = sizes[len(sizes) // 2], sum(sizes) / len(sizes)
-        self.assertTrue(0.001 <= median <= 0.01, median)
-        self.assertGreater(mean, 5 * median)                    # many tiny orders, a few large
-        self.assertGreaterEqual(min(sizes), 0.001 - 1e-9)
-        self.assertLessEqual(max(sizes), 5.0 + 1e-9)
-        buys = sum(1 for o in exchange.order_log if o[2] > 0) / len(exchange.order_log)
-        self.assertTrue(0.4 <= buys <= 0.6, buys)
+        views = _fake_view_sequence(survivor, n=60)
+        actions_a = [_as_tuple(a.act(v)) for v in views]
+        actions_b = [_as_tuple(b.act(v)) for v in views]
+        self.assertTrue(any(actions_a), "the trader never acted; test is vacuous")
+        self.assertEqual(actions_a, actions_b)
 
-    def test_control_never_contains_the_artificial_crowd(self):
-        kinds = {b.kind for b in build_population(3).bots}
-        self.assertEqual(kinds, {"noise", "trend", "contrarian", "value", "maker"})
+    # NOTE: there is deliberately no test asserting that the BOOK matches across
+    # conditions, not even on step 1. The traders that were swapped out were
+    # active on step 1, so replacing them with inert agents changes the book
+    # immediately. That is the intended effect of the treatment, not a fairness
+    # violation. What must stay fixed is the slots, the total capital, the index
+    # path and each surviving trader's own decision rule -- all tested above.
 
-    def test_control_is_reproducible(self):
-        a, _ = run("stress-thin-synthetic-no-event", 5, n_steps=30)
-        b, _ = run("stress-thin-synthetic-no-event", 5, n_steps=30)
-        self.assertEqual([dataclasses.asdict(r) for r in a.records],
-                         [dataclasses.asdict(r) for r in b.records])
+    def test_index_path_is_identical_across_conditions(self):
+        """The outside world must not notice the agent mix."""
+        control, _ = run("normal", n_steps=40, seed=5, spec=SPEC)
+        treated, _ = run("normal", n_steps=40, seed=5, spec=SPEC,
+                         n_llm=25, llm_factory=inert_factory)
+        self.assertEqual([r.index_price for r in control.records],
+                         [r.index_price for r in treated.records])
 
-    def test_control_runs_in_all_eight_scenarios(self):
-        for name in SCENARIOS:
-            exchange, _ = run(name, 2, n_steps=20)
-            self.assertEqual(len(exchange.records), 20, name)
+    def test_inert_agents_hold_no_position(self):
+        ex, pop = run("normal", n_steps=40, seed=5, spec=SPEC,
+                      n_llm=10, llm_factory=inert_factory)
+        for account_id in pop.llm_ids:
+            self.assertEqual(ex.accounts[account_id].position, 0.0)
 
 
 if __name__ == "__main__":

@@ -19,12 +19,17 @@ fyp-llm-risk-monitoring/
 ├── .gitignore
 ├── .env.example               # template for API keys (never commit .env)
 ├── requirements.txt           # Python dependencies
-├── perp_sim/                  # Phase 0: calibrated minimarket environment
-│   ├── engine/                #   core engine (orderbook, accounts, exchange, etc.)
-│   ├── bots.py                #   scripted traders for environment development/control
-│   ├── run_demo.py            #   demo runner
-│   ├── tests/                 #   automated checks
-│   └── output/                #   demo output CSVs (gitignored)
+├── perp_sim/                  # the simulator (minimal engine; see perp_sim/README.md)
+│   ├── engine/                #   orderbook, accounts, exchange, flow, index price
+│   ├── agents.py              #   one scripted archetype + the LLM agent hook
+│   ├── population.py          #   fixed slots, replace-not-add swap
+│   ├── run.py                 #   run one simulation
+│   ├── sanity.py              #   stylized facts + power check (run before Phase 1)
+│   ├── tests/                 #   63 tests
+│   └── output/                #   run CSVs (gitignored)
+├── legacy/                    # frozen Phase-0 material, not in the pipeline
+│   ├── README.md              #   what is here and why the engine was replaced
+│   └── perp_sim_phase0/       #   the Phase-0 engine + its 80 tests
 ├── docs/
 │   ├── proposal/              # Final proposal PDF + slides
 │   ├── meeting-notes/         # Professor & TA meeting notes (dated)
@@ -65,29 +70,43 @@ source venv/bin/activate    # macOS/Linux
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Run the demo (perp_sim Phase 0)
+# 4. Run the simulator
 cd perp_sim
-python3 run_demo.py
+python3 run.py --scenario stress --steps 600 --seed 0
 
-# 5. Run the tests
-python3 -m unittest discover -s tests -t .
+# 5. Check the instrument can see risk at all (run this before any experiment)
+python3 sanity.py
+
+# 6. Run the tests
+python3 -m pytest tests/ -q
 ```
 
 ## Phase Overview
 
 | Phase | Question | What perp_sim provides |
 |-------|----------|----------------------|
-| 1. Risk discovery | In a fixed population, how does replacing role-matched scripted decision-makers with LLMs change risk? | Planned; Phase 1 runner and LLM agents are not implemented |
-| 2. Intervention testing | Which rules (leverage cap, circuit breaker) reduce risk? | Config dials + forced-closing switch |
-| 3. Detection & prediction | Can public signals warn us before a cascade? | 28 public log columns (sim-only columns are labels, not inputs) |
+| 1. Risk discovery | In a fixed population, how does replacing role-matched scripted decision-makers with LLMs change risk? | The replace-not-add harness and its fairness tests. LLM agents and the Phase-1 runner are still not implemented, and the cascade channel is not yet live (see below). |
+| 2. Intervention testing | Which rules (leverage cap, circuit breaker) reduce risk? | Leverage and depth dials + the forced-closing switch. The circuit breaker was removed: it was a no-op in Phase 0 and must be rebuilt to also block aggressive limit orders and liquidation orders. |
+| 3. Detection & prediction | Can public signals warn us before a cascade? | Public / sim-only log column split (`PUBLIC_FIELDS`, `SIM_ONLY_FIELDS`); sim-only columns are labels, not inputs. |
 
 ## Important Notes
 
-- The simulator is a calibrated minimarket under development; current reports show material fidelity gaps. See `docs/design-docs/implementation_plan_v3.md`.
-- The current 50-scripted-bot calibration setup is not the final Phase 1 control population.
-- The final 100-slot role mix, aggregate collateral budget and replacement config remain to be approved.
+- **The simulator is no longer calibrated to real BTC in absolute terms, on
+  purpose.** The project compares risk *relatively* — same market, same settings,
+  only the agent mix changes — so the market has to be reasonable and held fixed,
+  not fitted. The calibration pipeline and its data stay in the repo as Phase-0
+  evidence (`data/scripts/`, `data/processed/`) but the simulator no longer
+  depends on them. `legacy/README.md` records why: the calibration never applied
+  to the market the experiment ran, and it was not identified.
+- **Phase 1 cannot produce a result yet.** Forced liquidations currently have no
+  measurable price effect (0.00 pp of endogenous amplification across 5 seeds,
+  even with 700+ liquidations), because the LP's quoted ladder spans only 0.08%.
+  The cause is diagnosed and the fix is scoped in `perp_sim/README.md` →
+  "Known open issues". Run `python3 sanity.py` and read that section before
+  starting any agent experiment.
 - LLM agents and the Phase 1 replacement runner are not yet implemented.
-- The external index-to-local price transmission has only been partially improved: after a one-seed quick smoke fit, frozen-dial diagnostics show local volatility near 0.74x target but ~60% zero-change minutes vs ~0.56% real; clustering is slightly outside tolerance and tails are ~2.5x target. The dates have been inspected and are not independent validation.
+- Numbers in `data/processed/*.json` are stale: they were produced by the Phase-0
+  engine at settings it no longer ships. See `legacy/README.md`.
 - API keys must never be committed. Use `.env` (see `.env.example`).
 
 ## Data Sources

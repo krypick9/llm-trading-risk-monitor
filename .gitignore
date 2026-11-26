@@ -74,3 +74,6 @@ Desktop.ini
 *.log
 logs/
 !logs/.gitkeep
+
+# ── pytest ──
+.pytest_cache/

@@ -5,7 +5,9 @@ import unittest
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.normpath(os.path.join(HERE, "..", "..", "data", "scripts"))
+# this package moved to legacy/perp_sim_phase0/, so the repo root is one
+# level further up than it was in Phase 0
+SCRIPTS = os.path.normpath(os.path.join(HERE, "..", "..", "..", "data", "scripts"))
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 

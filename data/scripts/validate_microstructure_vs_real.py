@@ -41,7 +41,10 @@ import pandas as pd
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", ".."))
-PERP_SIM_DIR = os.path.join(REPO_ROOT, "perp_sim")
+# The Phase-0 engine this script was written against now lives under
+# legacy/. These scripts are kept as Phase-0 evidence for the report and
+# are NOT part of the current pipeline -- see legacy/README.md.
+PERP_SIM_DIR = os.path.join(REPO_ROOT, "legacy", "perp_sim_phase0")
 PROCESSED_DIR = os.path.join(REPO_ROOT, "data", "processed")
 REF_DIR = os.path.join(REPO_ROOT, "data", "reference")
 sys.path.insert(0, PERP_SIM_DIR)
