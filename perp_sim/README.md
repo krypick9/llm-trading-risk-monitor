@@ -44,7 +44,7 @@ Everything needed for that chain is kept:
 | `engine/exchange.py` | matching + mark price + **liquidation engine** | trimmed |
 | `engine/index_price.py` | exogenous reference price | GBM + jumps only |
 | `engine/flow.py` | anonymous aggressive flow (demand) | trimmed |
-| `agents.py` | one liquidatable archetype + LLM hook | new (replaces the bot zoo) |
+| `agents.py` | leveraged position-taker + maker + LLM hook | new (replaces the bot zoo) |
 | `population.py` | fixed slots + replace-not-add swap | trimmed |
 
 The liquidation **mechanism** (multi-round forced closing, bad-debt sweep,
@@ -56,7 +56,7 @@ unchanged — that is the phenomenon under study.
 | Cut | Why it's safe |
 |---|---|
 | **The simulator's dependence on the calibration pipeline** (MSM grid, scale calibration) | It only served absolute claims we don't make, and it was the source of the contradictory artifacts. The *scripts and data stay in the repo* as Phase-0 evidence for the report — see `legacy/README.md`. What is gone is the dependency, not the record. |
-| **One of two liquidity sources** (MakerBots) | The exchange background LP is now the *only* resting liquidity. Phase-0 had LP + MakerBots + taker flow — that overlap caused the flow/depth scale conflict. See "Known open issues": this also removed the only liquidity that can *choose* to withdraw. |
+| ~~**One of two liquidity sources** (MakerBots)~~ | **Reversed.** Dropping them left one unbounded LP as the entire supply side, which made quoted spread and price impact opposite ends of a single dial. Makers are back as ONE archetype — see "Finite liquidity: makers are back, and what it cost". |
 | **Four of five bot archetypes** | Trend/contrarian/value/crowd + their invented thresholds collapse to one leveraged position-taker, so a risk move is attributable to the agent mix, not a four-type interaction. |
 | **Circuit breaker** | That's a Phase-2 *intervention*, not part of the baseline model. It was also a verified no-op in Phase 0 (it rejected only `price is None` market orders, and no bot ever sent one; liquidation orders bypassed the check entirely). Re-add it as a toggle when you test interventions — and test that it actually blocks something. |
 | **Scenario matrix** (2×2×3 = 12) | Collapsed to three: `normal`, `stress`, `replay-extreme`. |
@@ -110,21 +110,24 @@ agent experiment.**
 
 Current output (5 seeds / 3 seeds):
 
-    A. fat tails      kurtosis   = 12.96  PASS   (real BTC ~10.6)
+    A. fat tails      kurtosis   = 14.19  PASS   (real BTC ~10.6)
        vol clustering sq-ret ACF1= 0.338  PASS   (real ~0.275)
        price impact   slope      > 0      PASS
-       volume varies  coeff of var= 1.12  PASS   (real ~1.0)
-       volume ~ |ret| correlation = 0.48  PASS   (>0)
-       impact R^2     (info)      = 0.202         (real 0.36)
+       volume varies  coeff of var= 1.00  PASS   (real ~1.0)
+       volume ~ |ret| correlation = 0.40  PASS   (>0)
+       impact R^2     (info)      = 0.120         (real 0.36)
     B.  median lev  accts liq  liq steps  max/step   bad debt
                  2        0.0        0.0       0.0          0
-                 3        0.7        0.7       0.3          0
-                 5        2.0        1.0       2.0        115
-                 8        9.0        4.3       6.7        889
-                10       18.0        7.3      15.7       2252
-                15       27.0        9.3      24.7       7444
-                20       31.3       10.3      30.7      11752
-        monotone: True ; levels with liquidations: 6/7 -> PASS
+                 3        0.0        0.0       0.0          0
+                 5        2.7        2.7       2.7        123
+                 8       12.3        7.0      11.0       1383
+                10       18.3        9.0      15.7       3285
+                15       24.0       10.0      23.7       7722
+                20       25.7       10.3      25.0      11556
+        monotone: True ; levels with liquidations: 5/7 -> PASS
+
+    (5/7 not 6/7: 20% of slots are now makers, so there are 40 takers rather
+    than 50 and the 3x row no longer catches anyone.)
 
 ### Where the market now sits vs real BTC
 
@@ -216,9 +219,9 @@ See the skeleton at the bottom of `agents.py`. `n_llm=0` is the all-scripted
 control; nothing else about the market changes when you raise it.
 
 ## Decisions I made (override if you disagree)
-1. **Background LP = the only resting liquidity** (dropped MakerBots). If you'd
-   rather the scripted crowd provide liquidity, reinstate a maker archetype in
-   `agents.py` and `population.py`.
+1. **Participant makers own the touch, the background LP is the backstop behind
+   them.** This reverses the earlier decision to make the LP the only resting
+   liquidity; `maker_share=0` and `bg_backstop_only=False` restore it.
 2. **One archetype = leveraged position-taker** with a `long_bias` knob. It's
    symmetric at `long_bias=0.5`; raise it for crowded longs. It **holds** its
    position by default rather than re-targeting constant leverage — that choice
@@ -412,6 +415,58 @@ The liquidation response is unaffected by the cap (distinct accounts liquidated
 at 2×/5×/10×/20×: 0.0/2.7/18.0/31.3 at cap 0.5, 0.0/3.0/18.0/31.3 at cap 0.1),
 because liquidations are driven by the index path and the median mark rule, not
 by local flow noise. So this change does not move the headline risk metric.
+
+### Finite liquidity: makers are back, and what it cost
+
+The minimal cut dropped MakerBots and made the exchange's background LP the only
+resting liquidity. That turned out to have a measurable cost: with one unbounded
+LP as the whole supply side, quoted spread and price impact are opposite ends of
+a single dial, and no amount of replenishment tuning separates them (measured on
+the `fix/intra-step-replenishment` branch: six re-quotes per minute took spread
+from 1.0e-4 to 1.0e-6 and impact R² from 0.184 to 0.017).
+
+`MakerAgent` is liquidity that can run out. Unlike the LP it quotes from its own
+collateral, holds an inventory limit and skews away from inventory before
+reaching it, and **withdraws** — widening by `widen_factor` above a
+`maker_vol_withdraw` 5-step move and leaving the market entirely above twice
+that. Depth that disappears exactly when it is needed is a documented feature of
+stressed books and a cascade channel in its own right. The LP is demoted to a
+backstop behind them (`bg_backstop_only`, reinstated from Phase 0), so the touch
+belongs to agents that can widen, withdraw and go broke, and the LP is the deep
+tail that keeps a cascade representable.
+
+20% of slots are makers. Normal scenario, 5 seeds, 600 steps:
+
+| | no makers | **with makers** | real |
+|---|---|---|---|
+| median spread | 1.2e-4 (138x) | **3.2e-6 (3.7x)** | 8.8e-7 |
+| flat minutes | 1.3% | **5.8%** | 3.8% |
+| volume coeff of variation | 1.12 | **1.00** | ~1.0 |
+| hourly volatility | 0.00513 | **0.00458** | 0.00260 |
+| near depth | 0.403 | 0.397 | 0.49 |
+| kurtosis | 12.7 | 14.2 | 10.6 |
+| vol clustering ACF1 | 0.323 | 0.338 | 0.275 |
+| **price-impact R²** | **0.194** | **0.120** | 0.360 |
+
+Spread improved 37x and impact R² fell 1.6x. Compare that with intra-step
+replenishment, where spread improved 100x and R² fell 11x: finite strategic
+liquidity really does decouple them, where more replenishment could not. But it
+is a trade, not a free win, and R² moving away from real is the cost. Say so in
+the write-up.
+
+Cascades still amplify (stress, 10x, `long_bias=0.7`, 3 seeds: dip −3.06% with
+liquidations against −0.84% without, so −2.23 pp attributable to forced selling)
+and the power check still responds (distinct accounts liquidated 0 / 0 / 2.7 /
+12.3 / 18.3 / 24.0 / 25.7 across 2x to 20x).
+
+**Quote size is the trap.** Makers must own the *touch*, not the *depth*. At 0.05
+BTC each, ten makers put 0.5 BTC at the touch against ~0.23 BTC/min of flow,
+which cannot get through it: trades all happen at the same two prices and **25%
+of minutes close unchanged** against a real 3.8%. Phase 0 hit the same wall and
+left a note about it. Swept 0.003–0.05; 0.003 gives 5.8% flat minutes and the
+best volume dispersion, with near depth coming from the LP ladder behind.
+
+`maker_share=0` reproduces the taker-only market for comparison.
 
 ### Reach sets the maximum representable cascade depth
 

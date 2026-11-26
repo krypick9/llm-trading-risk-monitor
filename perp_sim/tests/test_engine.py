@@ -489,6 +489,103 @@ class LPInventoryTests(unittest.TestCase):
         self.assertGreater(cfg.bg_inventory_limit_btc, 2 * cfg.bg_flow_inventory_cap_btc)
 
 
+class MakerAgentTests(unittest.TestCase):
+    """Finite, strategic liquidity -- the thing one unbounded LP could not be."""
+
+    def _maker(self, **kw):
+        from agents import MakerAgent
+        return MakerAgent("m00", 1, **kw)
+
+    def _view(self, maker, prices, position=0.0, equity=1000.0):
+        from tests.test_population import _fake_view_sequence
+        from engine import OwnView
+        views = _fake_view_sequence(maker.account_id, n=len(prices))
+        view = views[-1]
+        view.price_history = list(prices)
+        view.last_price = view.mid = view.index_price = view.mark_price = prices[-1]
+        view.own = OwnView(account_id=maker.account_id, collateral=equity, equity=equity,
+                           position=position, entry_price=prices[-1], leverage=0.0,
+                           margin_buffer=None, liquidation_price=None, open_orders=0)
+        return view
+
+    def test_quotes_sit_a_tick_or_two_either_side(self):
+        from engine import OrderRequest
+        maker = self._maker(half_spread_ticks=1.5)
+        flat = [100_000.0] * 10
+        orders = [a for a in maker.act(self._view(maker, flat)) if isinstance(a, OrderRequest)]
+        mid = 100_000.0
+        for order in orders:
+            offset_ticks = abs(order.price - mid) / 0.1
+            self.assertGreater(offset_ticks, 0.5)
+            self.assertLess(offset_ticks, 6.0)
+
+    def test_withdraws_entirely_on_a_big_move(self):
+        from engine import OrderRequest
+        maker = self._maker(vol_withdraw=0.002)
+        crash = [100_000.0 * (1 - 0.004 * i) for i in range(10)]   # ~1.6% over 5 steps
+        actions = maker.act(self._view(maker, crash))
+        self.assertEqual([a for a in actions if isinstance(a, OrderRequest)], [],
+                         "a maker must be able to leave the market")
+
+    def test_widens_before_it_leaves(self):
+        from engine import OrderRequest
+        maker = self._maker(vol_withdraw=0.002, widen_factor=3.0)
+        flat = [100_000.0] * 10
+        mild = [100_000.0 * (1 - 0.0005 * i) for i in range(10)]   # between 1x and 2x
+        calm = [a for a in maker.act(self._view(maker, flat)) if isinstance(a, OrderRequest)]
+        wide = [a for a in maker.act(self._view(maker, mild)) if isinstance(a, OrderRequest)]
+        self.assertTrue(calm and wide)
+        self.assertGreater(abs(wide[0].price - mild[-1]), abs(calm[0].price - flat[-1]))
+
+    def test_stops_quoting_the_side_that_would_breach_its_inventory(self):
+        from engine import OrderRequest
+        maker = self._maker(inventory_limit=0.02)
+        flat = [100_000.0] * 10
+        long_full = [a for a in maker.act(self._view(maker, flat, position=0.02))
+                     if isinstance(a, OrderRequest)]
+        self.assertTrue(all(a.side == SELL for a in long_full))
+        short_full = [a for a in maker.act(self._view(maker, flat, position=-0.02))
+                      if isinstance(a, OrderRequest)]
+        self.assertTrue(all(a.side == BUY for a in short_full))
+
+    def test_skews_away_from_inventory_before_the_limit(self):
+        from engine import OrderRequest
+        maker = self._maker(inventory_limit=0.02, skew=0.6)
+        flat = [100_000.0] * 10
+        orders = {a.side: a for a in maker.act(self._view(maker, flat, position=0.01))
+                  if isinstance(a, OrderRequest)}
+        mid = 100_000.0
+        self.assertGreater(mid - orders[BUY].price, orders[SELL].price - mid,
+                           "a long maker should bid further away than it offers")
+
+    def test_a_wiped_out_maker_stops_quoting(self):
+        from engine import OrderRequest
+        maker = self._maker()
+        flat = [100_000.0] * 10
+        actions = maker.act(self._view(maker, flat, equity=0.0))
+        self.assertEqual([a for a in actions if isinstance(a, OrderRequest)], [])
+
+    def test_the_lp_stands_behind_the_participant_quotes(self):
+        """bg_backstop_only: the touch must belong to the makers."""
+        cfg = SimConfig(n_steps=5, bg_backstop_only=True)
+        ex = Exchange(cfg, get_scenario("normal"))
+        ex.add_account("mk")
+        tight = ex.book.round_price(ex.last_price * (1 - 1e-6))
+        ex.book.submit(Order(ex._next_oid(), "mk", BUY, 0.01, tight, "GTC"))
+        ex.book.submit(Order(ex._next_oid(), "mk", SELL, 0.01,
+                             ex.book.round_price(ex.last_price * (1 + 1e-6)), "GTC"))
+        before = ex.book.best_bid()
+        ex._requote_background(1, _Stats_stub())
+        self.assertLessEqual(ex.book.best_bid(), before + 1e-9,
+                             "the LP must not outbid the participant makers")
+
+
+class _Stats_stub:
+    def __init__(self):
+        self.volume = self.signed = 0.0
+        self.n_trades = self.n_orders = self.n_buys = self.n_sells = self.n_rejected = 0
+
+
 class CascadeAmplificationTests(unittest.TestCase):
     def test_forced_selling_now_deepens_the_dip(self):
         """The whole point of the ladder fix: the same run with liquidations on

@@ -64,6 +64,20 @@ class SimConfig:
     bg_anchor_strength: float = 0.8
     bg_walkaway_threshold: float = 0.01   # LP retreats on a >1% move over 5 steps
 
+    # ---- is the LP the market, or the backstop behind it? ----------------
+    # With participant makers in the population the LP should not compete with
+    # them at the touch: it starts its ladder BEYOND their best quotes (by
+    # bg_backstop_extra), so measured spread and near depth come from agents
+    # that can widen, withdraw and run out of money, with the LP as the deep
+    # tail that keeps a cascade representable.
+    #
+    # This is Phase-0's bg_backstop_only, reinstated. The minimal cut dropped it
+    # along with the makers, which left one unbounded LP as the entire supply
+    # side -- and that is why quoted spread and price impact could not be fixed
+    # independently of each other.
+    bg_backstop_only: bool = True
+    bg_backstop_extra: float = 0.0002     # how far beyond the best participant quote
+
     # ---- the shape of the quoted ladder ----------------------------------
     # The ladder's PRICE REACH, not just its size, decides whether a cascade is
     # representable at all. With the old uniform ladder (5 levels, flat 0.0002

@@ -353,6 +353,13 @@ class Exchange:
                 factor, widen = 0.3, 2.0
         centre = self.last_price + cfg.bg_anchor_strength * (self.index_price - self.last_price)
         half = s.bg_half_spread * widen
+        if cfg.bg_backstop_only:
+            # stand behind the participant makers rather than in front of them
+            bid, ask = self.book.best_bid(), self.book.best_ask()
+            if bid is not None and ask is not None:
+                mid = (bid + ask) / 2.0
+                if mid > 0:
+                    half = max(half, (ask - bid) / (2.0 * mid) + cfg.bg_backstop_extra)
 
         bid_scale, ask_scale = self._bg_inventory_scales()
         for offset, size in self._bg_ladder(half, s.bg_depth_btc * factor):

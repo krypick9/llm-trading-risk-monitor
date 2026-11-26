@@ -1,17 +1,23 @@
 """
 Traders.
 
-The minimal market has ONE scripted archetype -- a leveraged position-taker --
-plus the hook an LLM agent plugs into. Phase-0 had five archetypes (noise, trend,
-contrarian, value, maker) with invented thresholds and random cash/leverage
-draws; those are collapsed here so that when a risk metric moves you know it is
-the agent mix, not an interaction between four crowd types.
+Two scripted archetypes, plus the hook an LLM agent plugs into:
 
-Why a position-taker and not a maker: resting liquidity now comes entirely from
-the exchange's background LP (engine._requote_background), so the only thing the
-*traders* need to do is take leveraged directional positions that can be
-liquidated -- which is exactly the behaviour an LLM agent would replace, and the
-source of cascades.
+  PositionTaker -- a leveraged directional trader. The thing that gets
+      liquidated, and so the source of cascades.
+  MakerAgent    -- a liquidity provider with its OWN capital, its own inventory
+      limit, and the right to widen and withdraw. The thing that decides how
+      much a trade moves the price.
+
+Phase-0 had five archetypes with invented thresholds; the minimal cut collapsed
+them to the position-taker alone and made the exchange's background LP the only
+resting liquidity. That turned out to cost something measurable: with one
+unbounded LP as the whole supply side, quoted spread and price impact are
+opposite ends of a single dial, and no amount of replenishment tuning separates
+them (see README "Intra-step replenishment: measured, and not adopted" on the
+branch where that was measured). Finite, strategic liquidity is what separates
+them, so the maker is back -- but as ONE archetype with a documented purpose,
+not a crowd of four.
 
 Action contract (same as an LLM agent must follow):
     trader.act(view) -> list of OrderRequest / CancelAll
@@ -21,7 +27,7 @@ where `view` is Exchange.view(account_id): public market state + own account.
 import math
 import random
 
-from engine import BUY, SELL, OrderRequest
+from engine import BUY, SELL, CancelAll, OrderRequest
 
 MIN_TRADE = 0.002
 
@@ -128,3 +134,87 @@ class PositionTaker:
 #           decision = self.policy(view)      # your prompt/response -> intended position
 #           ...                               # translate to OrderRequest(s)
 #           return actions
+
+
+class MakerAgent:
+    """A liquidity provider with finite capital that can widen and withdraw.
+
+    Unlike the exchange's background LP -- which has an unbounded balance sheet
+    and re-posts a full ladder every step whatever happens -- a maker here:
+
+      * quotes from its OWN collateral, so its size is bounded by its account;
+      * holds an inventory limit and stops quoting the side that would breach
+        it, skewing away from inventory before that;
+      * WITHDRAWS when the market turns against it -- when recent realised
+        volatility exceeds `vol_withdraw`, it widens by `widen_factor` and cuts
+        its size, and beyond twice that threshold it stops quoting entirely.
+
+    The third behaviour is the one the market model was missing. Depth that
+    disappears exactly when it is needed is a documented feature of real
+    stressed books and a cascade channel in its own right: forced selling meets
+    a thinner book than the one that was there a minute earlier. The background
+    LP's `bg_walkaway` was a crude proxy for it; this is the behaviour itself,
+    on an agent that can run out of money.
+
+    It quotes one level per side. Near depth comes from there being several
+    makers, not from one maker quoting a ladder -- so losing a few of them
+    thins the touch, which is the point.
+    """
+
+    kind = "maker"
+
+    def __init__(self, account_id, seed, half_spread_ticks=1.5, quote_size=0.05,
+                 inventory_limit=0.10, skew=0.6, vol_withdraw=0.0015,
+                 widen_factor=3.0, lookback=5):
+        self.account_id = account_id
+        self.rng = random.Random(f"{seed}|maker|{account_id}")
+        self.half_spread_ticks = half_spread_ticks
+        self.quote_size = quote_size
+        self.inventory_limit = inventory_limit
+        self.skew = skew
+        self.vol_withdraw = vol_withdraw
+        self.widen_factor = widen_factor
+        self.lookback = lookback
+
+    def _recent_move(self, view) -> float:
+        hist = view.price_history
+        if len(hist) <= self.lookback:
+            return 0.0
+        return abs(math.log(hist[-1] / hist[-1 - self.lookback]))
+
+    def act(self, view):
+        centre = view.mid or view.last_price
+        if centre <= 0:
+            return []
+        actions = [CancelAll(self.account_id)]
+
+        half = view.tick_size * self.half_spread_ticks / centre
+        size = self.quote_size
+
+        # strategic withdrawal
+        move = self._recent_move(view)
+        if move > 2.0 * self.vol_withdraw:
+            return actions                      # off the market entirely
+        if move > self.vol_withdraw:
+            half *= self.widen_factor
+            size *= 0.4
+
+        pos = view.own.position
+        limit = self.inventory_limit
+        frac = pos / limit if limit else 0.0
+        buy_half = half * (1 + self.skew * max(0.0, frac))
+        sell_half = half * (1 + self.skew * max(0.0, -frac))
+
+        # A wiped-out maker stops quoting. Beyond that, size is bounded by the
+        # inventory limit above and by the exchange's own leverage clip
+        # (Exchange._clip_for_leverage), so there is no third cap here.
+        if view.own.equity <= 0:
+            return actions
+
+        if pos < limit and size > 0:
+            actions.append(OrderRequest(self.account_id, BUY, size,
+                                        price=centre * (1 - buy_half)))
+        if pos > -limit and size > 0:
+            actions.append(OrderRequest(self.account_id, SELL, size,
+                                        price=centre * (1 + sell_half)))
+        return actions

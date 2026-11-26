@@ -25,7 +25,7 @@ import math
 import random
 from dataclasses import dataclass, field
 
-from agents import PositionTaker
+from agents import MakerAgent, PositionTaker
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,25 @@ class PopulationSpec:
     long_bias: float = 0.5            # share of traders that are long (0.5 = balanced)
     momentum: float = 0.0             # 0 = fixed-direction; >0 adds a trend tilt
     rebalance: str = "hold"           # "hold" or "constant_leverage" (see agents.py)
+
+    # ---- how much of the crowd provides liquidity ------------------------
+    # Makers quote from their own capital and may widen or withdraw, so near
+    # depth becomes something the POPULATION supplies and can take away, rather
+    # than a constant the exchange's background LP posts whatever happens. The
+    # LP becomes a backstop behind them (SimConfig.bg_backstop_only).
+    # maker_share = 0 reproduces the taker-only market.
+    maker_share: float = 0.2          # share of slots that are makers
+    maker_half_spread_ticks: float = 1.5   # real BTCUSDT spread is ~1 tick
+    # Makers own the TOUCH; the background LP's ladder provides the DEPTH
+    # behind them. Quote size is deliberately small: at 0.05 BTC each, ten
+    # makers put 0.5 BTC at the touch against ~0.23 BTC/min of flow, which
+    # cannot get through it -- trades then all happen at the same two prices and
+    # 25% of minutes close unchanged (real: 3.8%). Phase 0 hit the same wall and
+    # noted it. Swept 0.003-0.05; 0.003 gives flat minutes 5.8% and the best
+    # volume dispersion.
+    maker_quote_size: float = 0.003   # per side, per maker
+    maker_inventory_limit: float = 0.015
+    maker_vol_withdraw: float = 0.003      # widen above this 5-step move, leave above 2x
 
     # ---- spread of leverage across the crowd -----------------------------
     # Leverage decides a trader's liquidation price, so a crowd on ONE leverage
@@ -62,6 +81,7 @@ class PopulationSpec:
 class Slot:
     index: int
     account_id: str
+    kind: str                         # "taker" or "maker"
     cash: float
     leverage: float
     direction: int
@@ -91,22 +111,50 @@ def _draw_leverage(spec: PopulationSpec, rng: random.Random) -> float:
 
 def make_slots(seed: int, spec: PopulationSpec) -> list:
     rng = random.Random(f"{seed}|population")
-    n_long = round(spec.long_bias * spec.m_traders)
-    directions = [1] * n_long + [-1] * (spec.m_traders - n_long)
+    if not 0.0 <= spec.maker_share <= 1.0:
+        raise ValueError(f"maker_share must be in [0, 1], got {spec.maker_share}")
+
+    n_makers = round(spec.maker_share * spec.m_traders)
+    kinds = ["maker"] * n_makers + ["taker"] * (spec.m_traders - n_makers)
+    rng.shuffle(kinds)
+
+    n_takers = spec.m_traders - n_makers
+    n_long = round(spec.long_bias * n_takers)
+    directions = [1] * n_long + [-1] * (n_takers - n_long)
     rng.shuffle(directions)
-    slots = [Slot(index=i, account_id=f"t{i:02d}", cash=spec.collateral,
-                  leverage=_draw_leverage(spec, rng), direction=directions[i])
+    direction_iter = iter(directions)
+
+    slots = [Slot(index=i, account_id=f"t{i:02d}", kind=kinds[i], cash=spec.collateral,
+                  leverage=_draw_leverage(spec, rng),
+                  direction=(next(direction_iter) if kinds[i] == "taker" else 0))
              for i in range(spec.m_traders)]
-    # fixed, seed-determined swap order
-    order = list(range(spec.m_traders))
-    rng.shuffle(order)
-    rank = {idx: r for r, idx in enumerate(order)}
-    return [Slot(index=s.index, account_id=s.account_id, cash=s.cash,
-                 leverage=s.leverage, direction=s.direction, swap_rank=rank[s.index])
+
+    # Fixed, seed-determined swap order, spread EVENLY ACROSS KINDS so that
+    # raising n_llm replaces a representative mix rather than all the makers
+    # first. Without this, a treatment run could differ from its control by
+    # having lost its liquidity providers, which is not the thing under study.
+    rank = {}
+    for kind in ("taker", "maker"):
+        members = [s.index for s in slots if s.kind == kind]
+        rng.shuffle(members)
+        for position, index in enumerate(members):
+            # interleave: a maker's place in the queue is scaled to its share
+            rank[index] = (position + 0.5) / max(1, len(members))
+    order = sorted(rank, key=lambda i: (rank[i], i))
+    final = {index: r for r, index in enumerate(order)}
+
+    return [Slot(index=s.index, account_id=s.account_id, kind=s.kind, cash=s.cash,
+                 leverage=s.leverage, direction=s.direction, swap_rank=final[s.index])
             for s in slots]
 
 
-def make_scripted(slot: Slot, seed: int, spec: PopulationSpec) -> PositionTaker:
+def make_scripted(slot: Slot, seed: int, spec: PopulationSpec):
+    if slot.kind == "maker":
+        return MakerAgent(slot.account_id, seed,
+                          half_spread_ticks=spec.maker_half_spread_ticks,
+                          quote_size=spec.maker_quote_size,
+                          inventory_limit=spec.maker_inventory_limit,
+                          vol_withdraw=spec.maker_vol_withdraw)
     return PositionTaker(slot.account_id, seed, target_leverage=slot.leverage,
                          act_prob=spec.act_prob, direction=slot.direction,
                          momentum=spec.momentum, rebalance=spec.rebalance)

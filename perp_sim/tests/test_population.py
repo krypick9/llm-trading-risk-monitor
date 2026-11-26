@@ -33,8 +33,8 @@ def inert_factory(slot, seed):
 
 
 def signature(slots):
-    return [(s.index, s.account_id, s.cash, s.leverage, s.direction, s.swap_rank)
-            for s in slots]
+    return [(s.index, s.account_id, s.kind, s.cash, s.leverage, s.direction,
+             s.swap_rank) for s in slots]
 
 
 SPEC = PopulationSpec()
@@ -105,6 +105,62 @@ class SlotTests(unittest.TestCase):
             self.assertEqual(sum(s.direction for s in pop.slots), control)
 
 
+class MakerPopulationTests(unittest.TestCase):
+    """Makers are part of the population, so they are part of the fairness
+    guarantee too -- and the swap order must not strip the market of its
+    liquidity providers first."""
+
+    def test_the_crowd_holds_both_archetypes(self):
+        from collections import Counter
+        kinds = Counter(s.kind for s in make_slots(0, SPEC))
+        self.assertEqual(kinds["maker"], round(SPEC.maker_share * SPEC.m_traders))
+        self.assertEqual(sum(kinds.values()), SPEC.m_traders)
+
+    def test_maker_share_zero_reproduces_a_taker_only_market(self):
+        spec = PopulationSpec(maker_share=0.0)
+        self.assertTrue(all(s.kind == "taker" for s in make_slots(0, spec)))
+
+    def test_an_impossible_maker_share_is_rejected(self):
+        with self.assertRaises(ValueError):
+            make_slots(0, PopulationSpec(maker_share=1.4))
+
+    def test_makers_have_no_direction_and_takers_do(self):
+        for slot in make_slots(0, SPEC):
+            if slot.kind == "maker":
+                self.assertEqual(slot.direction, 0)
+            else:
+                self.assertIn(slot.direction, (1, -1))
+
+    def test_long_bias_applies_to_the_takers(self):
+        spec = PopulationSpec(long_bias=0.75)
+        takers = [s for s in make_slots(0, spec) if s.kind == "taker"]
+        longs = sum(1 for s in takers if s.direction == 1)
+        self.assertAlmostEqual(longs / len(takers), 0.75, delta=0.03)
+
+    def test_the_swap_order_is_spread_across_archetypes(self):
+        """If LLM agents took every maker slot first, a treatment run would
+        differ from its control by having lost its liquidity providers -- which
+        is not the thing under study."""
+        from collections import Counter
+        slots = make_slots(0, SPEC)
+        for k in (5, 10, 25):
+            taken = sorted(slots, key=lambda s: s.swap_rank)[:k]
+            makers = Counter(s.kind for s in taken)["maker"]
+            self.assertAlmostEqual(makers / k, SPEC.maker_share, delta=0.1,
+                                   msg=f"swap mix is skewed at n_llm={k}")
+
+    def test_makers_quote_both_sides_and_refresh(self):
+        from engine import CancelAll, OrderRequest
+        population = build_population(0, SPEC, n_llm=0)
+        maker = next(t for t, s in zip(population.traders, population.slots)
+                     if s.kind == "maker")
+        views = _fake_view_sequence(maker.account_id, n=10)
+        actions = maker.act(views[-1])
+        self.assertIsInstance(actions[0], CancelAll)
+        sides = {a.side for a in actions if isinstance(a, OrderRequest)}
+        self.assertEqual(sides, {1, -1})
+
+
 class SwapTests(unittest.TestCase):
     def test_exactly_n_llm_slots_are_swapped_and_they_are_the_first_in_order(self):
         pop = build_population(3, SPEC, n_llm=10, llm_factory=inert_factory)
@@ -155,8 +211,10 @@ class UnswappedTradersAreUnaffectedTests(unittest.TestCase):
         changes the control traders, not just the market."""
         control = build_population(5, SPEC, n_llm=0)
         treated = build_population(5, SPEC, n_llm=10, llm_factory=inert_factory)
+        # pick a surviving TAKER: the population now holds both archetypes and
+        # they do not share a parameter set
         survivor = next(s.account_id for s in treated.slots
-                        if s.account_id not in treated.llm_ids)
+                        if s.account_id not in treated.llm_ids and s.kind == "taker")
         a = next(t for t in control.traders if t.account_id == survivor)
         b = next(t for t in treated.traders if t.account_id == survivor)
 
