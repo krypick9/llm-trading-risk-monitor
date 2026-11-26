@@ -306,6 +306,102 @@ class FlowTests(unittest.TestCase):
         self.assertLess(abs(flow.inventory_btc),
                         cfg.bg_flow_inventory_cap_btc + cfg.bg_flow_max_size_btc + 1e-9)
 
+    def test_per_minute_volume_is_not_constant(self):
+        """The core regression guard.
+
+        The old flow drew heavy-tailed sizes and then rescaled them so each
+        minute's total equalled bg_flow_btc_per_min, which pinned volume at
+        0.170 BTC/min at BOTH 2.2 and 80 orders/min. A market whose volume has
+        no variance has no volume/volatility relationship and gives a
+        price-impact regression nothing to explain."""
+        import statistics as stats
+        from run import run as run_sim
+        ex, _ = run_sim("normal", 600, seed=0)
+        volumes = [r.volume for r in ex.records]
+        mean = sum(volumes) / len(volumes)
+        self.assertGreater(stats.pstdev(volumes) / mean, 0.5,
+                           "per-minute volume is barely dispersed")
+
+    def test_volume_responds_to_the_arrival_rate(self):
+        """Under the old renormalisation, doubling the rate changed nothing."""
+        cfg_low = SimConfig(bg_flow_btc_per_min=None, bg_flow_orders_per_min=4.0)
+        cfg_high = SimConfig(bg_flow_btc_per_min=None, bg_flow_orders_per_min=16.0)
+        hist = [100_000.0] * 10
+
+        def volume(cfg):
+            flow = BackgroundTakerFlow(cfg, 3)
+            return sum(qty for t in range(1, 300)
+                       for _, qty in flow.orders_this_step(t, hist, 0.0026, 0.5, 0.5))
+
+        self.assertGreater(volume(cfg_high), 2.0 * volume(cfg_low))
+
+    def test_the_arrival_rate_is_derived_from_the_volume_target(self):
+        cfg = SimConfig()
+        flow = BackgroundTakerFlow(cfg, 1)
+        self.assertAlmostEqual(flow.mean_size_btc * flow.orders_per_min,
+                               cfg.bg_flow_btc_per_min, places=3)
+
+    def test_the_excitement_multiplier_is_mean_preserving(self):
+        """Excitement must change WHEN volume arrives, not how much.
+
+        Uncentred, its mean was 1 + 2.0*E|z| = 2.60 and measured volume came out
+        2.57x the target. A calm index must therefore draw LESS than the base
+        rate, not the same."""
+        cfg = SimConfig()
+        flow = BackgroundTakerFlow(cfg, 5)
+        calm = [100_000.0] * 10            # no move at all -> excite = 1 < mean
+        wild = [100_000.0 * (1 + 0.01 * i) for i in range(10)]
+
+        def volume(history):
+            f = BackgroundTakerFlow(cfg, 5)
+            return sum(qty for t in range(1, 400)
+                       for _, qty in f.orders_this_step(t, history, 0.0026, 0.5, 0.5))
+
+        base = cfg.bg_flow_btc_per_min * 399
+        self.assertLess(volume(calm), base, "a calm market must draw below the base rate")
+        self.assertGreater(volume(wild), volume(calm))
+
+    def test_no_order_is_below_the_lot_size(self):
+        """The renormalisation pushed ~73% of draws below the lot at 80/min,
+        where they were silently dropped."""
+        cfg = SimConfig()
+        flow = BackgroundTakerFlow(cfg, 9)
+        hist = [100_000.0] * 10
+        sizes = [qty for t in range(1, 300)
+                 for _, qty in flow.orders_this_step(t, hist, 0.0026, 0.5, 0.5)]
+        self.assertTrue(sizes)
+        self.assertTrue(all(q >= cfg.lot_size - 1e-12 for q in sizes))
+
+    def test_volume_and_absolute_return_move_together(self):
+        """A basic stylized fact the constant-volume flow could not show."""
+        from run import run as run_sim
+        ex, _ = run_sim("normal", 600, seed=0)
+        xs = [r.volume for r in ex.records]
+        ys = [abs(r.price_return) for r in ex.records]
+        n = len(xs)
+        mx, my = sum(xs) / n, sum(ys) / n
+        cov = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+        sx = sum((x - mx) ** 2 for x in xs) ** 0.5
+        sy = sum((y - my) ** 2 for y in ys) ** 0.5
+        self.assertGreater(cov / (sx * sy), 0.2)
+
+    def test_signed_volume_explains_part_of_the_return(self):
+        """Price-impact R^2. Phase-0 validation measured 0.04 in the simulator
+        against 0.36 in real data; with volume constant by construction that was
+        close to unavoidable. Guards the improvement, not the real value."""
+        from run import run as run_sim
+        ex, _ = run_sim("normal", 600, seed=0)
+        xs = [r.signed_volume for r in ex.records]
+        ys = [r.price_return for r in ex.records]
+        n = len(xs)
+        mx, my = sum(xs) / n, sum(ys) / n
+        sxx = sum((x - mx) ** 2 for x in xs)
+        slope = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / sxx
+        intercept = my - slope * mx
+        ss_res = sum((ys[i] - (intercept + slope * xs[i])) ** 2 for i in range(n))
+        ss_tot = sum((y - my) ** 2 for y in ys)
+        self.assertGreater(1 - ss_res / ss_tot, 0.05)
+
     def test_flow_makes_the_market_trade(self):
         ex = Exchange(SimConfig(n_steps=30), get_scenario("normal"))
         for _ in range(30):

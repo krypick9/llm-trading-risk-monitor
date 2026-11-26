@@ -52,32 +52,63 @@ def _vol_acf1(xs):
     return num / den if den > 0 else float("nan")
 
 
-def _impact_sign(ex):
-    """Crude price-impact sign: regress per-step return on signed volume.
-    We only check the SLOPE IS POSITIVE (buys push up, sells push down)."""
+def _impact(ex):
+    """Price impact: regress per-step return on signed volume.
+
+    Returns (slope, r_squared). The slope sign is the check (buys push up); the
+    R^2 is reported for information against the 0.36 measured on real BTC in
+    Phase 0. It is informative only because volume is no longer constant by
+    construction -- with the old renormalised flow it was ~0.01."""
     xs = [r.signed_volume for r in ex.records]
     ys = [r.price_return for r in ex.records]
     n = len(xs)
     mx, my = sum(xs) / n, sum(ys) / n
-    cov = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
     varx = sum((x - mx) ** 2 for x in xs)
-    return cov / varx if varx > 0 else float("nan")
+    if varx <= 0:
+        return float("nan"), float("nan")
+    slope = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / varx
+    intercept = my - slope * mx
+    ss_res = sum((ys[i] - (intercept + slope * xs[i])) ** 2 for i in range(n))
+    ss_tot = sum((y - my) ** 2 for y in ys)
+    return slope, (1 - ss_res / ss_tot if ss_tot > 0 else float("nan"))
+
+
+def _volume_vol_corr(ex):
+    """Do volume and absolute return move together? (a basic stylized fact)"""
+    xs = [r.volume for r in ex.records]
+    ys = [abs(r.price_return) for r in ex.records]
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    cov = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    sx = sum((x - mx) ** 2 for x in xs) ** 0.5
+    sy = sum((y - my) ** 2 for y in ys) ** 0.5
+    return cov / (sx * sy) if sx * sy > 0 else float("nan")
 
 
 def stylized_facts(seeds=(0, 1, 2, 3, 4), scenario="normal", steps=600):
-    ks, acfs, slopes = [], [], []
+    ks, acfs, slopes, r2s, vcs, cvs = [], [], [], [], [], []
     for s in seeds:
         ex, _ = run(scenario, steps, seed=s)
         r = _returns(ex)
         ks.append(_kurtosis(r))
         acfs.append(_vol_acf1(r))
-        slopes.append(_impact_sign(ex))
+        slope, r2 = _impact(ex)
+        slopes.append(slope)
+        r2s.append(r2)
+        vcs.append(_volume_vol_corr(ex))
+        volumes = [rec.volume for rec in ex.records]
+        mean_v = sum(volumes) / len(volumes)
+        cvs.append(stats.pstdev(volumes) / mean_v if mean_v > 0 else 0.0)
     k, a, sl = stats.mean(ks), stats.mean(acfs), stats.mean(slopes)
+    r2, vc, cv = stats.mean(r2s), stats.mean(vcs), stats.mean(cvs)
     print("A. STYLIZED FACTS (normal, %d seeds)" % len(seeds))
     print(f"   fat tails      : mean kurtosis   = {k:6.2f}   (normal = 3; >3 = fat)  -> {'PASS' if k > 3 else 'FAIL'}")
     print(f"   vol clustering : mean sq-ret ACF1 = {a:6.3f}  (>0 = clustering)       -> {'PASS' if a > 0 else 'FAIL'}")
     print(f"   price impact   : mean slope       = {sl:.3e}  (>0 = buys push up)     -> {'PASS' if sl > 0 else 'FAIL'}")
-    return k > 3 and a > 0 and sl > 0
+    print(f"   volume varies  : coeff of var     = {cv:6.2f}  (>0.5; real ~1.0)       -> {'PASS' if cv > 0.5 else 'FAIL'}")
+    print(f"   volume ~ |ret| : correlation      = {vc:6.2f}  (>0 = move together)    -> {'PASS' if vc > 0 else 'FAIL'}")
+    print(f"   impact R^2     : (info)           = {r2:6.3f}  (real BTC 0.36)")
+    return k > 3 and a > 0 and sl > 0 and cv > 0.5 and vc > 0
 
 
 def power_check(levs=(2, 3, 5, 8, 10, 15, 20), seeds=(0, 1, 2),

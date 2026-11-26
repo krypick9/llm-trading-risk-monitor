@@ -115,11 +115,36 @@ class SimConfig:
     # Anonymous aggressive orders so the last price actually moves on trades.
     # It is NOT liquidatable and has no strategy -- it is market texture, not an
     # agent. The liquidatable, swappable traders live in population.py.
-    bg_flow_orders_per_min: float = 80.0
-    bg_flow_btc_per_min: float = 0.194    # volume target; drawn sizes renormalize to this
+    # Sizes are drawn from a lognormal anchored on real BTC trades; the ARRIVAL
+    # RATE is then derived so expected volume per minute hits
+    # bg_flow_btc_per_min. (Earlier versions fixed the rate and renormalised the
+    # sizes, which made per-minute volume constant -- see engine/flow.py.)
+    #
+    #   bg_flow_size_median_btc = 0.002  -- the real median BTC trade (2 lots)
+    #   bg_flow_size_sigma      = 2.754  -- gives the real mean/median of 44.4,
+    #                                      sqrt(2 ln 44.4); real mean trade is
+    #                                      0.0887 BTC over 547 trades/min
+    #   bg_flow_btc_per_min     = 0.194  -- real 48.5 BTC/min x the 0.004 scale
+    #
+    # The derived rate comes out near 7/min rather than the depth-scaled real
+    # count of 2.19/min, and the gap is the size tail the cap removes: a 0.5 BTC
+    # order is already the whole near book, so the mini-market cannot carry
+    # real-scale large trades and needs more of them to move the same volume.
+    # That is a known limit of scaling depth by 0.004 while the lot stays at
+    # 0.001 BTC -- a size-for-size scaled trade would be 0.35 lots, below the
+    # grid. See README "What the flow can and cannot reproduce".
+    #
+    # bg_flow_orders_per_min is used only when bg_flow_btc_per_min is None.
+    bg_flow_orders_per_min: float = 7.4
+    bg_flow_btc_per_min: float | None = 0.194   # EXPECTED volume/min; sets the arrival rate
     bg_flow_size_median_btc: float = 0.002
-    bg_flow_size_sigma: float = 2.5
-    bg_flow_max_size_btc: float = 0.5
+    bg_flow_size_sigma: float = 2.754
+    # The single dial that trades flow realism against return realism, because
+    # a capped order is capped relative to a near book of only ~0.5 BTC. Swept
+    # over 0.05-0.5 (normal, 5 seeds); 0.3 is the best overall and is also the
+    # best on price-impact R^2. See README "What the flow can and cannot
+    # reproduce" for the full table.
+    bg_flow_max_size_btc: float = 0.3
     bg_flow_inventory_cap_btc: float = 5.0
     bg_flow_vol_excitement: float = 2.0   # arrival rate rises when the index just moved
     bg_flow_imbalance_skew: float = 0.15  # flow leans to the thinner book side
